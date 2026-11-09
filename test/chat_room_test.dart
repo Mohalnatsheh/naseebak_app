@@ -270,6 +270,54 @@ void main() {
       expect(tester.testTextInput.isVisible, isFalse);
     });
 
+    testWidgets('an empty room speaks to her in the feminine', (tester) async {
+      // meJson is a woman
+      final adapter = FakeAdapter()..on('GET', '/api/chats/c1', FakeResponse(200, page([])));
+      await openRoom(tester, adapter, MemoryChatCache());
+      await tester.pumpAndSettle();
+      expect(find.text('ابدئي المحادثة بالسلام'), findsOneWidget);
+      expect(find.text('اكتبي رسالتكِ…'), findsOneWidget);
+    });
+
+    testWidgets('an empty room that was ended invites nobody to start it', (tester) async {
+      final adapter = FakeAdapter()
+        ..on('GET', '/api/chats/c1', FakeResponse(200, {...page([]), 'conversation': {...conv, 'status': 'ENDED'}}));
+      await openRoom(tester, adapter, MemoryChatCache());
+      await tester.pumpAndSettle();
+      expect(find.text('ابدئي المحادثة بالسلام'), findsNothing);
+      expect(find.text('لا توجد رسائل في هذه المحادثة'), findsOneWidget);
+    });
+
+    testWidgets('«إبلاغ» says that sending the report also ends the chat', (tester) async {
+      final adapter = FakeAdapter()..on('GET', '/api/chats/c1', FakeResponse(200, page([1])));
+      await openRoom(tester, adapter, MemoryChatCache());
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('خيارات'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('إبلاغ').last);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('تنتهي المحادثة للطرفين'), findsOneWidget);
+      expect(find.text('إبلاغ وإنهاء المحادثة'), findsOneWidget);
+    });
+
+    testWidgets('tapping send keeps the keyboard open for the next message', (tester) async {
+      final adapter = FakeAdapter()
+        ..on('GET', '/api/chats/c1', FakeResponse(200, page([1, 2])))
+        ..on('POST', '/api/chats/c1/messages', FakeResponse(201, {
+          'message': {'id': 'm901', 'body': 'السلام عليكم', 'createdAt': DateTime.utc(2026, 10, 30, 12).toIso8601String(), 'mine': true, 'readAt': null},
+        }));
+      await openRoom(tester, adapter, MemoryChatCache());
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('chat-input')));
+      await tester.pump();
+      await tester.enterText(find.byKey(const Key('chat-input')), 'السلام عليكم');
+      await tester.tap(find.byKey(const Key('chat-send')));
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(tester.testTextInput.isVisible, isTrue);
+    });
+
     testWidgets('a sent message reloads the chats list (its last message and order)', (tester) async {
       final adapter = FakeAdapter()
         ..on('GET', '/api/chats/c1', FakeResponse(200, page([1, 2])))

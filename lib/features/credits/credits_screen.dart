@@ -348,10 +348,7 @@ class _CreditsScreenState extends ConsumerState<CreditsScreen> with WidgetsBindi
               ),
             ),
             const SizedBox(height: 12),
-            const Text(
-              'يُستخدم الرصيد عند إبداء الاهتمام أو طلب التعارف بحسب نظام المنصة. لا يُخصم أي رصيد على «لا».',
-              style: TextStyle(color: AppColors.muted, fontSize: 13.5),
-            ),
+            Text(creditRuleLine(ref.watch(countsProvider).valueOrNull?.flags), style: const TextStyle(color: AppColors.muted, fontSize: 13.5)),
             if (_pendingId != null && !_dialogOpen) ...[
               const SizedBox(height: 12),
               _PendingPaymentCard(offerCancel: _offerCancel, cancelling: _cancelling, onCancel: _cancel),
@@ -556,7 +553,7 @@ class _PaymentWaitDialogState extends State<_PaymentWaitDialog> {
           SizedBox(height: 18),
           Text('بانتظار تأكيد الدفع…', textAlign: TextAlign.center),
           SizedBox(height: 4),
-          Text('أكمل الدفع في الصفحة المفتوحة ثم عد إلى التطبيق.',
+          Text('يمكنك إكمال الدفع في الصفحة المفتوحة ثم العودة إلى التطبيق.',
               textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted, fontSize: 13)),
         ],
       ),
@@ -709,4 +706,14 @@ class _PaymentHistoryScreenState extends ConsumerState<PaymentHistoryScreen> {
       ),
     );
   }
+}
+
+/// What a credit buys, following the switches like the website's payments page (`creditLine`): never
+/// says requests cost credit while «مهتم» is what costs, and adds the free reply while it is on.
+String creditRuleLine(CycleFlags? flags) {
+  if (flags?.creditOnInterest ?? false) {
+    const line = 'يُستخدم رصيد واحد عند اختيار «مهتم»، والتوافق والطلبات والمحادثة مجانية.';
+    return flags!.freeInterestReply ? '$line الرد بـ«مهتم» على من أبدى اهتمامه مجاني.' : line;
+  }
+  return 'يُستخدم الرصيد عند إبداء الاهتمام أو طلب التعارف بحسب نظام المنصة. لا يُخصم أي رصيد على «لا».';
 }

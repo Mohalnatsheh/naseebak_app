@@ -458,7 +458,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
         context: context,
         isScrollControlled: true,
         useSafeArea: true,
-        builder: (_) => const ReportSheet(),
+        builder: (_) => const ReportSheet(
+          description: 'يصل البلاغ إلى فريق نصيبك، وتنتهي المحادثة للطرفين ولا يمكن فتحها مرة أخرى.',
+          submitLabel: 'إبلاغ وإنهاء المحادثة',
+        ),
       );
       if (res == null) return;
       reason = res.$1;
@@ -620,10 +623,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
                 ),
               ),
               Expanded(
-                child: items.isEmpty
-                    ? const MessageView(
+                child: items.isEmpty && !_open
+                    ? const MessageView(icon: Icons.forum_outlined, title: 'لا توجد رسائل في هذه المحادثة')
+                    : items.isEmpty
+                    ? MessageView(
                         icon: Icons.waving_hand_outlined,
-                        title: 'ابدأ المحادثة بالسلام',
+                        title: forViewer(female, 'ابدأ المحادثة بالسلام', 'ابدئي المحادثة بالسلام'),
                         body: 'تعرّفا على بعض باحترام: القيم، والطموحات، وتصوّر الحياة الأسرية.',
                       )
                     : Stack(
@@ -685,6 +690,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
 
   Widget _footer(ChatSummary? chat) {
     if (chat == null) return const SizedBox.shrink();
+    final female = ref.watch(authControllerProvider).me?.isFemale ?? false;
     if (!chat.canSend || !_chatEnabled) {
       final text = !_chatEnabled
           ? 'المحادثات متوقفة حالياً.'
@@ -722,16 +728,19 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
                 // A tap anywhere else (the messages, the header) closes the keyboard
                 onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
                 style: const TextStyle(fontSize: 16),
-                decoration: const InputDecoration(hintText: 'اكتب رسالتك…', counterText: ''),
+                decoration: InputDecoration(hintText: forViewer(female, 'اكتب رسالتك…', 'اكتبي رسالتكِ…'), counterText: ''),
               ),
             ),
             const SizedBox(width: 6),
-            IconButton.filled(
-              key: const Key('chat-send'),
-              tooltip: 'إرسال',
-              style: IconButton.styleFrom(backgroundColor: AppColors.navy, minimumSize: const Size(52, 52)),
-              onPressed: () => _send(),
-              icon: const Icon(Icons.send_rounded, color: Colors.white),
+            // Part of the input's tap region: sending keeps the keyboard open for the next message
+            TextFieldTapRegion(
+              child: IconButton.filled(
+                key: const Key('chat-send'),
+                tooltip: 'إرسال',
+                style: IconButton.styleFrom(backgroundColor: AppColors.navy, minimumSize: const Size(52, 52)),
+                onPressed: () => _send(),
+                icon: const Icon(Icons.send_rounded, color: Colors.white),
+              ),
             ),
           ],
         ),
