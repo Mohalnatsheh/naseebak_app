@@ -59,8 +59,8 @@ class ReferralScreen extends ConsumerWidget {
               InfoBanner(
                 icon: Icons.card_giftcard_rounded,
                 text: female
-                    ? 'شاركي رمزكِ مع من تعرفين ممن يبحث عن الزواج. عندما يُكمل المدعو إعداد ملفه تحصلين على رصيد إضافي، ويحصل هو على رصيد هدية.'
-                    : 'شارك رمزك مع من تعرف ممن يبحث عن الزواج. عندما يُكمل المدعو إعداد ملفه تحصل على رصيد إضافي، ويحصل هو على رصيد هدية.',
+                    ? 'شاركي رمزكِ مع من تعرفين ممن يبحث عن الزواج. عندما يُكمل المدعو إعداد ملفه تحصلين على رصيد إضافي، ويحصل المدعو على رصيد هدية.'
+                    : 'شارك رمزك مع من تعرف ممن يبحث عن الزواج. عندما يُكمل المدعو إعداد ملفه تحصل على رصيد إضافي، ويحصل المدعو على رصيد هدية.',
               ),
               const SizedBox(height: 16),
               Card(
@@ -71,7 +71,7 @@ class ReferralScreen extends ConsumerWidget {
                     const SizedBox(height: 8),
                     SelectableText(r.code,
                         key: const Key('referral-code'),
-                        style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: 4, color: AppColors.navy)),
+                        style: AppText.display.copyWith(fontWeight: FontWeight.w800, letterSpacing: 4, color: AppColors.navy)),
                     const SizedBox(height: 16),
                     Row(children: [
                       Expanded(
@@ -120,7 +120,7 @@ class _Stat extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(children: [
-            Text('$value', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.gold)),
+            Text('$value', style: AppText.title.copyWith(fontWeight: FontWeight.w800, color: AppColors.goldText)),
             Text(label, style: const TextStyle(color: AppColors.muted)),
           ]),
         ),

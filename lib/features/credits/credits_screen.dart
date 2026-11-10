@@ -15,6 +15,8 @@ import '../../core/network/json.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/common.dart';
 import '../home/counts.dart';
+import '../pro/pro_repository.dart';
+import '../pro/pro_section.dart';
 import 'credits_repository.dart';
 
 /// Balance, packages and checkout. Credits are added by the server only after the payment is confirmed.
@@ -95,7 +97,8 @@ class _CreditsScreenState extends ConsumerState<CreditsScreen> with WidgetsBindi
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed || _pendingId == null) return;
+    if (state != AppLifecycleState.resumed) return;
+    if (_pendingId == null) return;
     // Back from the checkout page: keep checking (a new window if the last one ran out), offer cancel if still pending
     _poll();
     _graceTimer?.cancel();
@@ -308,6 +311,8 @@ class _CreditsScreenState extends ConsumerState<CreditsScreen> with WidgetsBindi
     // Payments hidden in the app: balance and history only (no packages, no pointer to buying elsewhere)
     final plans = payments ? ref.watch(plansProvider) : null;
     final me = ref.watch(authControllerProvider).me;
+    // Pro lives on its own screen (`/pro`); here only a link card, and only where payments show
+    final pro = payments ? ref.watch(proStateProvider).valueOrNull : null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('الرصيد'),
@@ -319,6 +324,7 @@ class _CreditsScreenState extends ConsumerState<CreditsScreen> with WidgetsBindi
       body: RefreshIndicator(
         onRefresh: () async {
           ref.invalidate(plansProvider);
+          if (payments) ref.invalidate(proStateProvider);
           await ref.read(authControllerProvider.notifier).refreshMe();
         },
         child: ListView(
@@ -335,11 +341,11 @@ class _CreditsScreenState extends ConsumerState<CreditsScreen> with WidgetsBindi
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('رصيدك الحالي', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                        Text('رصيدك الحالي', style: AppText.labelRegular.copyWith(color: Colors.white70)),
                         Text(
                           '${me?.credits ?? 0}',
                           key: const Key('balance'),
-                          style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w800),
+                          style: AppText.display.copyWith(color: Colors.white, fontWeight: FontWeight.w800),
                         ),
                       ],
                     ),
@@ -348,10 +354,14 @@ class _CreditsScreenState extends ConsumerState<CreditsScreen> with WidgetsBindi
               ),
             ),
             const SizedBox(height: 12),
-            Text(creditRuleLine(ref.watch(countsProvider).valueOrNull?.flags), style: const TextStyle(color: AppColors.muted, fontSize: 13.5)),
+            Text(creditRuleLine(ref.watch(countsProvider).valueOrNull?.flags), style: AppText.labelRegular.copyWith(color: AppColors.muted)),
             if (_pendingId != null && !_dialogOpen) ...[
               const SizedBox(height: 12),
               _PendingPaymentCard(offerCancel: _offerCancel, cancelling: _cancelling, onCancel: _cancel),
+            ],
+            if (pro != null && showPlans(pro, payments)) ...[
+              const SizedBox(height: 16),
+              ProLinkCard(isPro: pro.isPro),
             ],
             if (plans != null) ...[
             const SizedBox(height: 16),
@@ -437,7 +447,7 @@ class _PackageTile extends StatelessWidget {
                     spacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Text(price, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: AppColors.navy)),
+                      Text(price, style: AppText.body.copyWith(fontWeight: FontWeight.w800, color: AppColors.navy)),
                       if (pkg.wasPrice != null && pkg.wasPrice! > pkg.price)
                         Text(
                           '${formatAmount(pkg.wasPrice!)} ${pkg.currencySymbol}',
@@ -446,7 +456,7 @@ class _PackageTile extends StatelessWidget {
                     ],
                   ),
                   if (pkg.chargeLabel != null && !pkg.chargeLabel!.contains(pkg.currencySymbol))
-                    Text('يُحصَّل ${ltrIsolate(pkg.chargeLabel!)}', style: const TextStyle(color: AppColors.muted, fontSize: 12.5)),
+                    Text('يُحصَّل ${ltrIsolate(pkg.chargeLabel!)}', style: AppText.caption.copyWith(color: AppColors.muted)),
                 ],
               ),
             ),
@@ -545,7 +555,7 @@ class _PaymentWaitDialogState extends State<_PaymentWaitDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       key: const Key('payment-wait'),
-      content: const Column(
+      content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           SizedBox(height: 8),
@@ -554,7 +564,7 @@ class _PaymentWaitDialogState extends State<_PaymentWaitDialog> {
           Text('بانتظار تأكيد الدفع…', textAlign: TextAlign.center),
           SizedBox(height: 4),
           Text('يمكنك إكمال الدفع في الصفحة المفتوحة ثم العودة إلى التطبيق.',
-              textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted, fontSize: 13)),
+              textAlign: TextAlign.center, style: AppText.labelRegular.copyWith(color: AppColors.muted)),
         ],
       ),
       actions: [
@@ -694,7 +704,7 @@ class _PaymentHistoryScreenState extends ConsumerState<PaymentHistoryScreen> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
-                            Text('${formatAmount(p.amount)} ${p.currency}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                            Text('${formatAmount(p.amount)} ${currencyLabel(p.currency)}', style: const TextStyle(fontWeight: FontWeight.w700)),
                             Pill(text: label, color: color),
                           ],
                         ),

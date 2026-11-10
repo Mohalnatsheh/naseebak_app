@@ -3,9 +3,11 @@ import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/common.dart';
+import '../../shared/widgets/alpha_fade.dart';
 
 /// Endless background motion only in the real app: never under `flutter test` (pumpAndSettle would wait forever)
 /// nor when the phone asks for reduced motion.
@@ -72,10 +74,16 @@ class NightBackdrop extends StatefulWidget {
 class _NightBackdropState extends State<NightBackdrop> with SingleTickerProviderStateMixin {
   late final _c = AnimationController(vsync: this, duration: const Duration(seconds: 30));
 
+  /// The drift loops forever: never with reduced motion (DS-22)
   @override
-  void initState() {
-    super.initState();
-    if (widget.animate && loopingMotion) _c.repeat();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final run = widget.animate && loopingMotion && !AppMotion.reduced(context);
+    if (run && !_c.isAnimating) {
+      _c.repeat();
+    } else if (!run && _c.isAnimating) {
+      _c.stop();
+    }
   }
 
   @override
@@ -91,7 +99,7 @@ class _NightBackdropState extends State<NightBackdrop> with SingleTickerProvider
         gradient: LinearGradient(
           begin: AlignmentDirectional.topStart,
           end: AlignmentDirectional.bottomEnd,
-          colors: [AppColors.navyDeep, AppColors.navy, Color(0xFF2B5A84)],
+          colors: [AppColors.navyDeep, AppColors.navy, AppColors.navy2],
         ),
       ),
       child: AnimatedBuilder(
@@ -130,6 +138,16 @@ class _FadeSlideInState extends State<FadeSlideIn> with SingleTickerProviderStat
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reduced motion: in place at once (design P2-8)
+    if (AppMotion.reduced(context)) {
+      _start?.cancel();
+      _c.value = 1;
+    }
+  }
+
+  @override
   void dispose() {
     _start?.cancel();
     _c.dispose();
@@ -140,7 +158,8 @@ class _FadeSlideInState extends State<FadeSlideIn> with SingleTickerProviderStat
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _curve,
-      builder: (_, child) => Opacity(
+      // AlphaFade, not Opacity: no inherited opacity into the fields, buttons and shadows (QA A-L10)
+      builder: (_, child) => AlphaFade(
         opacity: _curve.value,
         child: Transform.translate(offset: Offset(0, (1 - _curve.value) * widget.offset), child: child),
       ),
@@ -154,9 +173,12 @@ class _FadeSlideInState extends State<FadeSlideIn> with SingleTickerProviderStat
 /// While the keyboard is open it folds to the back button and a smaller title, so the field and the button below
 /// stay in view on small phones with large text.
 class AuthHero extends StatefulWidget {
-  const AuthHero({super.key, required this.title, this.subtitle, this.showBack = false, this.trailing});
+  const AuthHero({super.key, required this.title, this.subtitle, this.showBack = false, this.trailing, this.compactLine});
   final String title;
   final String? subtitle;
+
+  /// Kept under the title while the keyboard is open (the code screen: the number the code went to)
+  final String? compactLine;
   final bool showBack;
   final Widget? trailing;
 
@@ -186,7 +208,10 @@ class _AuthHeroState extends State<AuthHero> with WidgetsBindingObserver {
     final compact = View.of(context).viewInsets.bottom > 0;
     final title = widget.title;
     final subtitle = widget.subtitle;
-    return ClipPath(
+    // Light status-bar icons over the navy hero (sign-in, sign-up, code)
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: ClipPath(
       clipper: _CurveClipper(),
       child: NightBackdrop(
         child: AnimatedSize(
@@ -216,13 +241,24 @@ class _AuthHeroState extends State<AuthHero> with WidgetsBindingObserver {
                         key: const Key('auth-hero-compact'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w800),
+                        style: AppText.headline.copyWith(color: Colors.white, fontWeight: FontWeight.w800),
                       ),
                     )
                   else
                     const Spacer(),
                   ?widget.trailing,
                 ]),
+                if (compact && widget.compactLine != null)
+                  Padding(
+                    padding: EdgeInsetsDirectional.only(start: widget.showBack ? 48 : 0),
+                    child: Text(
+                      widget.compactLine!,
+                      key: const Key('auth-hero-compact-line'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.labelRegular.copyWith(color: Colors.white.withValues(alpha: 0.82)),
+                    ),
+                  ),
                 if (!compact) ...[
                   const FadeSlideIn(child: BrandLogo(height: 46, onDark: true)),
                   const SizedBox(height: 22),
@@ -230,7 +266,7 @@ class _AuthHeroState extends State<AuthHero> with WidgetsBindingObserver {
                     delay: const Duration(milliseconds: 120),
                     child: Text(
                       title,
-                      style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w800, height: 1.3),
+                      style: AppText.title.copyWith(color: Colors.white, fontWeight: FontWeight.w800, height: 1.3),
                     ),
                   ),
                   if (subtitle != null) ...[
@@ -239,7 +275,7 @@ class _AuthHeroState extends State<AuthHero> with WidgetsBindingObserver {
                       delay: const Duration(milliseconds: 220),
                       child: Text(
                         subtitle,
-                        style: TextStyle(color: Colors.white.withValues(alpha: 0.82), fontSize: 15, height: 1.65),
+                        style: AppText.body.copyWith(color: Colors.white.withValues(alpha: 0.82), height: 1.65),
                       ),
                     ),
                   ],
@@ -249,6 +285,7 @@ class _AuthHeroState extends State<AuthHero> with WidgetsBindingObserver {
           ),
         ),
       ),
+    ),
     );
   }
 }

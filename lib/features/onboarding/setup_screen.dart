@@ -5,6 +5,7 @@ import '../../app/providers.dart';
 import '../../core/analytics/analytics.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/localization/digits.dart';
+import '../../core/localization/safe_input_formatter.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/json.dart';
 import '../../core/theme/app_theme.dart';
@@ -328,7 +329,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
       return Scaffold(
         appBar: AppBar(title: const Text('إكمال ملفك')),
         body: ErrorView(
-          error: details.error ?? ApiException(kind: ApiErrorKind.server, message: 'تعذّر تحميل قائمة المدن. حاول مرة أخرى.'),
+          error: details.error ?? ApiException(kind: ApiErrorKind.server, message: 'تعذّر تحميل قائمة المدن. يُرجى المحاولة مرة أخرى.'),
           onRetry: () => ref.invalidate(countryDetailsProvider(me?.country.code ?? 'JO')),
         ),
       );
@@ -426,7 +427,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                 errorText: _errors['dob'],
                 suffixIcon: const Icon(Icons.calendar_month_outlined),
               ),
-              child: Text(_dob == null ? forViewer(female, 'اختر التاريخ', 'اختاري التاريخ') : formatDate(_dob!),
+              child: Text(_dob == null ? 'اختيار التاريخ' : formatDate(_dob!),
                   style: TextStyle(color: _dob == null ? AppColors.muted : AppColors.ink)),
             ),
           ),
@@ -465,6 +466,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
             TextField(
               controller: _children,
               keyboardType: TextInputType.number,
+              inputFormatters: [LatinDigitsFormatter()],
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(hintText: '0', errorText: _errors['children']),
             ),
@@ -489,6 +491,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   key: const Key('age-min'),
                   controller: _ageMin,
                   keyboardType: TextInputType.number,
+                  inputFormatters: [LatinDigitsFormatter()],
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(labelText: 'من', errorText: _errors['ageMin'], errorMaxLines: 2),
                 ),
@@ -499,6 +502,7 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
                   key: const Key('age-max'),
                   controller: _ageMax,
                   keyboardType: TextInputType.number,
+                  inputFormatters: [LatinDigitsFormatter()],
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(labelText: 'إلى', errorText: _errors['ageMax'], errorMaxLines: 2),
                 ),
@@ -507,16 +511,22 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
           ),
           const SizedBox(height: 10),
           Text('${forViewer(female, 'يمكنك', 'يمكنكِ')} إضافة تفضيلات أخرى لاحقاً من «تفضيلاتي» في حسابك.',
-              style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+              style: AppText.labelRegular.copyWith(color: AppColors.muted)),
         ];
       default:
-        return [GuardianFieldsView(fields: _guardian, errors: _errors, onChanged: () => setState(() {}))];
+        return [
+          GuardianFieldsView(
+            fields: _guardian,
+            errors: _errors,
+            onFieldChanged: (key) => setState(() => _errors.remove(key)),
+          ),
+        ];
     }
   }
 
   Widget _label(String t) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: Text(t, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+        child: Text(t, style: AppText.body.copyWith(fontWeight: FontWeight.w700)),
       );
 
   Widget _chips(List<String> options, String? value, ValueChanged<String> onPick, String? error,
@@ -531,17 +541,26 @@ class _SetupScreenState extends ConsumerState<SetupScreen> {
             for (final o in options)
               ChoiceChip(
                 label: Text(labelOf?.call(o) ?? o),
+                // No ✓ here: it widened the picked chip, the row re-wrapped and the next tap landed in a gap; the
+                // pick shows by its colour and navy edge
+                showCheckmark: false,
                 selected: value == o,
                 onSelected: (_) => onPick(o),
                 materialTapTargetSize: MaterialTapTargetSize.padded,
               ),
           ],
         ),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text(error, style: const TextStyle(color: AppColors.danger, fontSize: 13)),
-          ),
+        // Eases out when answered instead of pulling the rows below up under the finger
+        AnimatedSize(
+          duration: const Duration(milliseconds: 250),
+          alignment: AlignmentDirectional.topStart,
+          child: error == null
+              ? const SizedBox(width: double.infinity)
+              : Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(error, style: AppText.labelRegular.copyWith(color: AppColors.danger)),
+                ),
+        ),
       ],
     );
   }

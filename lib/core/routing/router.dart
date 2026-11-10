@@ -22,8 +22,10 @@ import '../../features/matches/match_detail_screen.dart';
 import '../../features/matches/match_models.dart';
 import '../../features/matches/matches_screen.dart';
 import '../../features/notifications/mark_page_read.dart';
+import '../../features/chat/last_chat.dart';
 import '../../features/notifications/notifications_screen.dart';
 import '../../features/onboarding/setup_screen.dart';
+import '../../features/pro/pro_screen.dart';
 import '../../features/profile/guardian_form.dart';
 import '../../features/profile/photos_screen.dart';
 import '../../features/profile/profile_edit_screen.dart';
@@ -72,7 +74,8 @@ String? guardRedirect({
       return '/auth/phone';
     case AuthStatus.signedIn:
       final me = auth.me!;
-      if (me.deactivated) return location == '/paused' ? null : '/paused';
+      // Paused: only the paused page, and «عضوية Pro» to see or stop the renewal
+      if (me.deactivated) return location == '/paused' || location == '/pro' ? null : '/paused';
       if (!me.profileComplete) {
         return location == '/onboarding' || location == '/profile/guardian' ? null : '/onboarding';
       }
@@ -80,6 +83,24 @@ String? guardRedirect({
       if (onAuth || entry.contains(location)) return '/home';
       return null;
   }
+}
+
+/// `/credits?section=pro` (old links and pre-release builds' «Pro» tag) → the Pro screen, which now has its own route
+String? creditsRedirect(Uri uri) => uri.queryParameters['section'] == 'pro' ? '/pro' : null;
+
+/// A screen of the signed-in app (not the splash, intro, sign-in or setup pages)
+bool _inApp(String path) =>
+    !const ['/splash', '/intro', '/country', '/paused', '/suspended', '/onboarding'].contains(path) &&
+    !path.startsWith('/auth/');
+
+/// Sees a naseebak.com link the platform opens while the app runs before the router does; [handle] returns true when
+/// it opened it itself.
+class WebsiteLinkObserver with WidgetsBindingObserver {
+  WebsiteLinkObserver(this.handle);
+  final bool Function(Uri uri) handle;
+
+  @override
+  Future<bool> didPushRouteInformation(RouteInformation routeInformation) async => handle(routeInformation.uri);
 }
 
 /// Bridges Riverpod state changes to go_router's refresh.
@@ -102,17 +123,19 @@ final rootNavigatorKey = GlobalKey<NavigatorState>();
 final routerProvider = Provider<GoRouter>((ref) {
   final refresh = _RouterRefresh(ref);
   ref.onDispose(refresh.dispose);
+  linkPaymentsShown = () => ref.read(appPaymentsProvider);
+  ref.onDispose(() => linkPaymentsShown = () => true);
 
   // A naseebak.com link waiting for the home screen: one that opened the app before it could show it (splash,
-  // sign-in), or a detail screen (a chat, a match), which is pushed over home so «رجوع» returns there
+  // sign-in), or a detail screen (a chat, a match), which is pushed over home so «رجوع» returns there. One slot: a
+  // newer link replaces one still waiting, and a link is opened once (taken out of the slot before it opens).
   String? pendingLink;
   late final GoRouter router;
   void openPending() {
     final route = pendingLink;
     pendingLink = null;
     if (route == null) return;
-    const tabs = ['/home', '/suggestions', '/matches', '/chats', '/account'];
-    tabs.contains(Uri.parse(route).path) ? router.go(route) : router.push(route);
+    openAppRoute(router, route);
   }
   String? guard(String path) => guardRedirect(
         location: path,
@@ -121,6 +144,48 @@ final routerProvider = Provider<GoRouter>((ref) {
         splashDone: ref.read(splashDoneProvider),
         introSeen: ref.read(introSeenProvider),
       );
+
+  // A link while the app is open and ready (signed in, past setup): opened like a notice tap, over the screen the
+  // member is on, and the screen already on top (e.g. «عضوية Pro» when Stripe returns to it) is never opened twice.
+  // Registered before the router's own listener, so it sees the link first; anything else (signed out, a referral
+  // link) goes on to the router's redirect below.
+  // Not ready yet (splash, sign-in, setup): it waits in the slot and opens on home.
+  final links = WebsiteLinkObserver((uri) {
+    final link = WebsiteLink.parse(uri);
+    final route = link?.route;
+    if (link == null || route == null || link.invitationCode != null) return false;
+    String current;
+    try {
+      current = router.state.uri.path;
+    } catch (_) {
+      // No screen yet
+      current = '/splash';
+    }
+    if (guard('/home') != null || guard(current) != null || !_inApp(current)) {
+      pendingLink = route;
+      return true;
+    }
+    pendingLink = null;
+    openAppRoute(router, route);
+    return true;
+  });
+  WidgetsBinding.instance.addObserver(links);
+  ref.onDispose(() => WidgetsBinding.instance.removeObserver(links));
+  // A link that came while the app was still starting
+  final early = EarlyLinks.instance.take();
+  final earlyLink = early == null ? null : WebsiteLink.parse(early);
+  if (earlyLink != null) {
+    final code = earlyLink.invitationCode;
+    if (code != null) {
+      // A friend's invitation: kept for sign-up, which opens on «حساب جديد» (as the redirect does)
+      ref.read(sharedPreferencesProvider).setString(pendingInvitationKey, code);
+      Future.microtask(() => ref.read(authModeProvider.notifier).set(OtpContext.register));
+    } else if (earlyLink.route != null) {
+      pendingLink = earlyLink.route;
+    }
+  }
+  // No link: the chat the app was showing when the system ended it in the background reopens over home
+  pendingLink ??= LastChat.take(ref.read(sharedPreferencesProvider));
 
   router = GoRouter(
     navigatorKey: rootNavigatorKey,
@@ -202,7 +267,15 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/notifications', builder: (_, _) => const NotificationsScreen()),
       GoRoute(
         path: '/credits',
+        // `?section=pro` (a «Pro» tag in a 1.1.0 pre-release chat, old links) now lives on its own screen
+        redirect: (_, state) => creditsRedirect(state.uri),
         builder: (_, _) => const MarkPageRead(path: '/dashboard/payments', child: CreditsScreen()),
+      ),
+      GoRoute(
+        path: '/pro',
+        // A test or review account (payments hidden) never sees Pro, not even its name: home instead
+        redirect: (_, _) => ref.read(appPaymentsProvider) ? null : '/home',
+        builder: (_, _) => const MarkPageRead(path: '/dashboard/pro', child: ProScreen()),
       ),
       GoRoute(path: '/credits/history', builder: (_, _) => const PaymentHistoryScreen()),
       GoRoute(path: '/profile', builder: (_, _) => const ProfileScreen()),

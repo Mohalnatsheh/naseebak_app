@@ -80,6 +80,66 @@ void homeLayoutTests() {
     expect(find.text('مهتم بك'), findsOneWidget);
   });
 
+  testWidgets('home «اقتراحات اليوم»: no verified mark while intro requests are on; shown when off', (tester) async {
+    Future<void> pump(bool introRequests) async {
+      final adapter = FakeAdapter()
+        ..on('GET', '/api/me/counts', FakeResponse(200, {
+          'flags': {'mutualSuggestions': true, 'introRequests': introRequests},
+          'newSuggestions': 1,
+        }))
+        ..on('GET', '/api/notifications/unread-count', const FakeResponse(200, {'count': 0}));
+      adapter.handlers['GET /api/suggestions/feed'] = (r) => FakeResponse(200, {
+            'items': r.queryParameters['tab'] == 'new'
+                ? [
+                    {
+                      'kind': 'mutual',
+                      'id': '1',
+                      'compatibilityScore': 80,
+                      'reason': '',
+                      'candidate': {'id': 'u1', 'firstName': 'عمر', 'age': 31, 'isVerified': true},
+                    },
+                  ]
+                : [],
+            'page': 1,
+            'totalPages': 1,
+          });
+      final overrides = await testOverrides(adapter, store: MemoryTokenStore('t1'));
+      await tester.pumpWidget(ProviderScope(
+        key: UniqueKey(),
+        overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => true)],
+        child: rtlApp(const HomeScreen()),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    await pump(true);
+    expect(find.text('عمر، 31'), findsOneWidget);
+    expect(find.byKey(const Key('home-verified')), findsNothing);
+    await pump(false);
+    expect(find.byKey(const Key('home-verified')), findsOneWidget);
+  });
+
+  testWidgets('home «اقتراحات اليوم» failing to load shows a line with a retry, not an empty space', (tester) async {
+    var fail = true;
+    final adapter = FakeAdapter()
+      ..on('GET', '/api/me/counts', const FakeResponse(200, {'flags': {'mutualSuggestions': true}, 'newSuggestions': 1}))
+      ..on('GET', '/api/notifications/unread-count', const FakeResponse(200, {'count': 0}));
+    adapter.handlers['GET /api/suggestions/feed'] = (_) => fail
+        ? const FakeResponse(500, {'error': 'خطأ'})
+        : const FakeResponse(200, {'items': [], 'page': 1, 'totalPages': 1});
+    final overrides = await testOverrides(adapter, store: MemoryTokenStore('t1'));
+    await tester.pumpWidget(ProviderScope(
+      overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => true)],
+      child: rtlApp(const HomeScreen()),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('home-suggestions-error')), findsOneWidget);
+    fail = false;
+    await tester.tap(find.descendant(of: find.byKey(const Key('home-suggestions-error')), matching: find.text('إعادة المحاولة')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('no-home-suggestions')), findsOneWidget);
+  });
+
   testWidgets('home: no new suggestions → a card that leads to the preferences', (tester) async {
     final adapter = FakeAdapter()
       ..on('GET', '/api/me/counts', const FakeResponse(200, {'flags': {}}))
@@ -91,5 +151,86 @@ void homeLayoutTests() {
     ));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('no-home-suggestions')), findsOneWidget);
+  });
+
+  testWidgets('right after setup: cards on home but counts said 0 → the counts are read again, once (QA A-L01)',
+      (tester) async {
+    var countsReads = 0;
+    final adapter = FakeAdapter()
+      ..on('GET', '/api/notifications/unread-count', const FakeResponse(200, {'count': 0}));
+    adapter.handlers['GET /api/me/counts'] = (_) {
+      countsReads++;
+      // The feed created the card meanwhile
+      return FakeResponse(200, {'flags': {'mutualSuggestions': true}, 'newSuggestions': countsReads == 1 ? 0 : 1});
+    };
+    adapter.handlers['GET /api/suggestions/feed'] = (_) => const FakeResponse(200, {
+          'items': [
+            {
+              'kind': 'mutual',
+              'id': '1',
+              'compatibilityScore': 80,
+              'reason': '',
+              'candidate': {'id': 'u2', 'firstName': 'عمر', 'age': 31},
+            },
+          ],
+          'page': 1,
+          'totalPages': 1,
+        });
+    final overrides = await testOverrides(adapter, store: MemoryTokenStore('t1'));
+    await tester.pumpWidget(ProviderScope(
+      overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => true)],
+      child: rtlApp(const HomeScreen()),
+    ));
+    await tester.pumpAndSettle();
+    expect(countsReads, 2);
+    expect(find.descendant(of: find.byKey(const Key('status-new')), matching: find.text('1')), findsOneWidget);
+  });
+
+  test('unread chats are counted as chats, the Arabic way (QA A2-L3)', () {
+    String body(int n) => nextStepFor(Counts.fromJson({'flags': {}, 'unreadChats': n})).body;
+    expect(body(1), 'لديك رسائل جديدة في محادثة واحدة.');
+    expect(body(2), 'لديك رسائل جديدة في محادثتين.');
+    expect(body(5), 'لديك رسائل جديدة في 5 محادثات.');
+    expect(body(12), 'لديك رسائل جديدة في 12 محادثة.');
+  });
+
+  testWidgets('home at 2× text on a 360 dp phone lays out without overflow (QA A-M05, A-L14)', (tester) async {
+    tester.view.physicalSize = const Size(360, 780);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.view.reset);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final adapter = FakeAdapter()
+      ..on('GET', '/api/me/counts', const FakeResponse(200, {
+        'flags': {'mutualSuggestions': true},
+        'newSuggestions': 3,
+        'likedYou': 2,
+        'actionableMatches': 1,
+        'credits': 4,
+      }))
+      ..on('GET', '/api/notifications/unread-count', const FakeResponse(200, {'count': 12}))
+      ..on('GET', '/api/suggestions/feed', const FakeResponse(200, {'items': [], 'page': 1, 'totalPages': 1}));
+    final overrides = await testOverrides(adapter, store: MemoryTokenStore('t1'));
+    await tester.pumpWidget(ProviderScope(
+      overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => true)],
+      child: rtlApp(const HomeScreen()),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.scrollUntilVisible(find.text('توافقات تنتظرك'), 200);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('توافقات تنتظرك'), findsOneWidget);
+  });
+
+  test('one banner slot: 0 credits with someone waiting beats the push nudge (design P1-5)', () {
+    Counts c(Map<String, dynamic> j) => Counts.fromJson({'flags': {'creditOnInterest': true}, ...j});
+    expect(homeBannerFor(c({'credits': 0, 'likedYou': 2})), HomeBanner.noCreditsWithInterest);
+    expect(homeBannerFor(c({'credits': 3, 'likedYou': 2})), HomeBanner.pushOff);
+    expect(homeBannerFor(c({'credits': 0, 'likedYou': 0})), HomeBanner.pushOff);
+    expect(
+      homeBannerFor(Counts.fromJson({'flags': {'creditOnInterest': true, 'freeInterestReply': true}, 'credits': 0, 'likedYou': 1})),
+      HomeBanner.pushOff,
+    );
   });
 }

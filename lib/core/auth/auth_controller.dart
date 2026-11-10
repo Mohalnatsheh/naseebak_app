@@ -1,10 +1,15 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../features/auth/me.dart';
 import '../../features/chat/chat_cache.dart';
+import '../../features/chat/chat_drafts.dart';
+import '../../features/chat/last_chat.dart';
+import '../../features/chat/voice_played_store.dart';
 import '../network/api_exception.dart';
 import '../push/push_service.dart';
+import '../storage/picker_files.dart';
 
 enum AuthStatus {
   /// Restoring the saved session
@@ -121,7 +126,7 @@ class AuthController extends Notifier<AuthState> {
   /// Shows a newer balance without a round trip (payment status, decide answers).
   void updateCredits(int credits) {
     final me = state.me;
-    if (state.status == AuthStatus.signedIn && me != null) {
+    if (state.status == AuthStatus.signedIn && me != null && me.credits != credits) {
       state = AuthState(AuthStatus.signedIn, me: me.copyWith(credits: credits));
     }
   }
@@ -144,10 +149,40 @@ class AuthController extends Notifier<AuthState> {
   }
 
   Future<void> _signOutLocally() async {
-    await ref.read(tokenStoreProvider).clear();
-    // Private conversations never stay on a phone after sign-out
-    await ref.read(chatCacheProvider).clearAll();
-    state = const AuthState.signedOut();
+    // Photos of the last member's matches never stay in memory for the next sign-in (first: nothing below can skip it)
+    try {
+      PaintingBinding.instance.imageCache
+        ..clear()
+        ..clearLiveImages();
+    } catch (_) {
+      // No painting binding (pure unit tests): no image cache to clear
+    }
+    // Each step runs even if one before it fails (the first failure is rethrown once all have run)
+    Object? failed;
+    StackTrace? failedAt;
+    Future<void> step(Future<void> Function() run) async {
+      try {
+        await run();
+      } catch (e, st) {
+        failed ??= e;
+        failedAt ??= st;
+      }
+    }
+
+    try {
+      await step(() => ref.read(tokenStoreProvider).clear());
+      // Private conversations never stay on a phone after sign-out (nor drafts, nor the photo picker's copies)
+      await step(() => ref.read(chatCacheProvider).clearAll());
+      await step(() => ref.read(chatDraftsProvider).clearAll());
+      await step(() => ref.read(pickerFilesCleanerProvider)());
+      // Which of the partner's voice notes were played (the unplayed dots)
+      await step(() => ref.read(voicePlayedStoreProvider).clear());
+      // The chat to reopen after the system ended the app is this member's: never the next one's (review A2 minor 5)
+      await step(() => ref.read(sharedPreferencesProvider).remove(LastChat.key));
+    } finally {
+      state = const AuthState.signedOut();
+    }
+    if (failed != null) Error.throwWithStackTrace(failed!, failedAt!);
   }
 
   /// The member's country is fixed by their number; keep the picker in step for the next sign-in.

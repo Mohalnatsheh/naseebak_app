@@ -7,9 +7,11 @@ import '../../core/localization/digits.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/json.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/widgets/brand_kit.dart';
 import '../../shared/widgets/common.dart';
 import '../../shared/widgets/person_details_view.dart';
 import '../home/gendered_copy.dart';
+import '../pro/pro_badge.dart';
 import 'match_models.dart';
 import 'matches_repository.dart';
 import 'safety_actions.dart';
@@ -120,6 +122,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                     final m = _items[i];
                     return _MatchTile(
                       match: m,
+                      viewerFemale: ref.watch(authControllerProvider).me?.isFemale ?? false,
                       onTap: () async {
                         await context.push('/matches/${m.id}', extra: m);
                         if (mounted) _load();
@@ -134,8 +137,31 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
   }
 }
 
+/// The tile's line for a match's next step (the server's `nextStep`): what waits, and on whom. An older server sends
+/// none: «توافق متبادل».
+({String text, Color color, IconData icon}) matchNextStepLine(String? step, {required String name, required bool viewerFemale}) {
+  String p(String m, String f) => forPartner(viewerFemale, m, f);
+  String g(String m, String f) => forViewer(viewerFemale, m, f);
+  return switch (step) {
+    'reply_family' => (text: '$name ${p('يطلب', 'تطلب')} تعارفاً عائلياً · ${g('ردّك', 'ردّكِ')} مطلوب', color: AppColors.danger, icon: Icons.family_restroom_rounded),
+    'reply_chat' => (text: '$name ${p('يطلب', 'تطلب')} محادثة · ${g('ردّك', 'ردّكِ')} مطلوب', color: AppColors.danger, icon: Icons.chat_bubble_outline_rounded),
+    'waiting_family' => (text: 'طلب التعارف العائلي بانتظار الرد', color: AppColors.warning, icon: Icons.hourglass_top_rounded),
+    'waiting_chat' => (text: 'طلب المحادثة بانتظار الرد', color: AppColors.warning, icon: Icons.hourglass_top_rounded),
+    'chat_open' => (text: 'المحادثة مفتوحة', color: AppColors.success, icon: Icons.forum_outlined),
+    'family_accepted' => (text: 'تعارف عائلي جارٍ', color: AppColors.success, icon: Icons.family_restroom_rounded),
+    'choose' => (text: g('اختر طريقة التعارف', 'اختاري طريقة التعارف'), color: AppColors.navy, icon: Icons.touch_app_outlined),
+    _ => (text: 'توافق متبادل', color: AppColors.success, icon: Icons.favorite_rounded),
+  };
+}
+
+Widget _nextStepPill(MatchSummary m, bool viewerFemale) {
+  final line = matchNextStepLine(m.nextStep, name: m.partner.firstName, viewerFemale: viewerFemale);
+  return Pill(key: Key('next-step-${m.id}'), text: line.text, color: line.color, icon: line.icon);
+}
+
 class _MatchTile extends StatelessWidget {
-  const _MatchTile({required this.match, required this.onTap, this.onUnblock});
+  const _MatchTile({required this.match, required this.onTap, this.onUnblock, this.viewerFemale = false});
+  final bool viewerFemale;
   final MatchSummary match;
   final VoidCallback onTap;
 
@@ -148,42 +174,30 @@ class _MatchTile extends StatelessWidget {
     final closed = match.closedLabel;
     return Card(
       child: InkWell(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(AppRadius.card),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
-              Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  color: closed != null ? AppColors.line : AppColors.gold.withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  p.firstName.isEmpty ? '؟' : p.firstName.characters.first,
-                  style: TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w700,
-                    color: closed != null ? AppColors.muted : AppColors.navy,
-                  ),
-                ),
-              ),
+              // One avatar (P2-5): a gold ring while the match is on, grey once it's closed
+              MemberAvatar(name: p.firstName, size: 52, matched: closed == null, dimmed: closed != null, pro: p.isPro),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(p.age != null ? '${p.firstName}، ${p.age} سنة' : p.firstName,
-                        style: Theme.of(context).textTheme.titleMedium),
+                    NameWithBadge(
+                      isPro: p.isPro,
+                      child: Text(p.age != null ? '${p.firstName}، ${p.age} سنة' : p.firstName,
+                          style: Theme.of(context).textTheme.titleMedium),
+                    ),
                     const SizedBox(height: 2),
                     Text(
                       [p.city, if (match.createdAt != null) 'منذ ${formatDate(match.createdAt!, withYear: false)}']
                           .whereType<String>()
                           .join(' · '),
-                      style: const TextStyle(color: AppColors.muted, fontSize: 13.5),
+                      style: AppText.labelRegular.copyWith(color: AppColors.muted),
                     ),
                     const SizedBox(height: 6),
                     if (onUnblock != null)
@@ -203,7 +217,14 @@ class _MatchTile extends StatelessWidget {
                     else if (match.visitStatus != null)
                       Pill(text: visitStatusLabel(match.visitStatus!), color: AppColors.success, icon: Icons.family_restroom_rounded)
                     else
-                      const Pill(text: 'توافق متبادل', color: AppColors.success, icon: Icons.favorite_rounded),
+                      // The seal (S1) and this match's own next step (the server's `nextStep`)
+                      Row(
+                        children: [
+                          const SealMark(size: 18),
+                          const SizedBox(width: 6),
+                          Flexible(child: _nextStepPill(match, viewerFemale)),
+                        ],
+                      ),
                   ],
                 ),
               ),

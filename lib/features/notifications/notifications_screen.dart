@@ -9,6 +9,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/network/json.dart';
 import '../../core/push/push_permission.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/widgets/brand_kit.dart';
 import '../../shared/widgets/common.dart';
 import '../home/counts.dart';
 
@@ -48,12 +49,18 @@ class AppNotification {
 /// Maps a notification (its web `metadata.url`, else its type) to an app screen.
 String appRouteFor(AppNotification n) => appRouteForLink(url: n.url, type: n.type);
 
+/// Whether the app shows payments to the signed-in member (`appPayments`); the router provider wires it to the session
+bool Function() linkPaymentsShown = () => true;
+
 /// The app's tab roots: switched to with `go` (pushing one over the tab shell duplicates its page key)
 const appTabRoots = ['/home', '/suggestions', '/matches', '/chats', '/account'];
 
 /// Opens a notification's screen (in-app list and push taps): a tab is switched to, anything else is pushed, and
 /// the screen already on top (e.g. the chat being read) is left as it is.
 void openAppRoute(GoRouter router, String route) {
+  // Pro for a test or review account (payments hidden) is home: switched to as the tab it is, so «الرئيسية» is the
+  // selected tab and not the one the link arrived on (QA A-L06; pushing `/pro` and redirecting kept «حسابي» selected)
+  if (Uri.parse(route).path == '/pro' && !linkPaymentsShown()) route = '/home';
   if (router.state.uri.toString() == route) return;
   appTabRoots.contains(Uri.parse(route).path) ? router.go(route) : router.push(route);
 }
@@ -74,7 +81,11 @@ String appRouteForLink({String? url, String? type}) {
         return tab != null ? '/suggestions?tab=$tab' : '/suggestions';
       }
       if (path.startsWith('/dashboard/chats')) return '/chats';
-      if (path.startsWith('/dashboard/payments')) return '/credits';
+      // Exact: `/dashboard/profile` starts with `/dashboard/pro` too
+      if (path == '/dashboard/pro' || path.startsWith('/dashboard/pro/')) return '/pro';
+      if (path.startsWith('/dashboard/payments')) {
+        return uri.queryParameters['section'] == 'pro' ? '/pro' : '/credits';
+      }
       if (path.startsWith('/dashboard/profile/edit')) return '/profile/edit';
       if (path.startsWith('/dashboard/profile')) return '/profile';
       if (path.startsWith('/dashboard/support')) return '/support';
@@ -249,7 +260,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
   void _restore(int i, AppNotification n) {
     if (!mounted) return;
     setState(() => _items.insert(i.clamp(0, _items.length), n));
-    showSnack(context, 'تعذّر حذف الإشعار، حاول مرة أخرى');
+    showSnack(context, 'تعذّر حذف الإشعار، يُرجى المحاولة مرة أخرى');
   }
 
   Future<void> _deleteAll() async {
@@ -305,7 +316,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
                   PushOffCard(padding: EdgeInsets.fromLTRB(16, 12, 16, 0)),
                   SizedBox(
                     height: 420,
-                    child: MessageView(icon: Icons.notifications_none_rounded, title: 'لا توجد إشعارات'),
+                    child: MessageView(art: LineArtKind.lantern, icon: Icons.notifications_none_rounded, title: 'لا توجد إشعارات'),
                   ),
                 ])
               : ListView.separated(
@@ -331,7 +342,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
                         children: [
                           Text(n.body),
                           if (n.createdAt != null)
-                            Text(formatRelative(n.createdAt!), style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+                            Text(formatRelative(n.createdAt!), style: AppText.caption.copyWith(color: AppColors.muted)),
                         ],
                       ),
                       onTap: () => _open(i),

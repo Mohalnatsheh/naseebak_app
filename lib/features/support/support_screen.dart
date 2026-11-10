@@ -142,6 +142,9 @@ class SupportScreen extends ConsumerWidget {
         // No Hero: it flew between two support screens opened on top of each other and crashed before layout
         // (Crashlytics: RenderBox was not laid out, _HeroFlightManifest._boundingBoxFor)
         heroTag: null,
+        // Brand navy, not Material's default tint (design review P2)
+        backgroundColor: AppColors.navy,
+        foregroundColor: Colors.white,
         onPressed: () => _new(context, ref),
         icon: const Icon(Icons.add_comment_outlined),
         label: const Text('تذكرة جديدة'),
@@ -153,7 +156,7 @@ class SupportScreen extends ConsumerWidget {
             ? const MessageView(
                 icon: Icons.support_agent_rounded,
                 title: 'لا توجد تذاكر بعد',
-                body: 'واجهتك مشكلة أو لديك اقتراح؟ أرسل تذكرة وسيرد عليك فريق نصيبك هنا.',
+                body: 'واجهتك مشكلة أو لديك اقتراح؟ يمكنك إرسال تذكرة وسيرد عليك فريق نصيبك هنا.',
               )
             : RefreshIndicator(
                 onRefresh: () async => ref.invalidate(supportTicketsProvider),
@@ -239,7 +242,7 @@ class _TicketCard extends StatelessWidget {
                         textAlign: TextAlign.end,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                        style: AppText.caption.copyWith(color: AppColors.muted),
                       ),
               ),
             ]),

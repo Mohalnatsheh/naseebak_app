@@ -1,3 +1,5 @@
+import 'package:flutter/widgets.dart' show TextDirection;
+
 import '../../core/localization/digits.dart';
 import 'chat_models.dart';
 
@@ -31,23 +33,61 @@ bool sameChatDay(DateTime a, DateTime b) {
   return (text: text, urgent: days <= 3);
 }
 
-/// Messages from one person within this gap read as one group: tighter spacing, one time under the last
-const chatGroupGap = Duration(minutes: 5);
+/// The share of a chat's time still left, for the gold arc round the partner's avatar (S4): out of 14 days, or 21 when
+/// more than 14 are left (extended by 7). Null when the chat isn't running.
+double? chatTimeFraction(DateTime? expiresAt, {DateTime? now}) {
+  if (expiresAt == null) return null;
+  final left = expiresAt.difference(now ?? DateTime.now());
+  if (left.isNegative) return null;
+  final total = Duration(days: left > const Duration(days: 14) ? 21 : 14);
+  return (left.inMinutes / total.inMinutes).clamp(0.0, 1.0);
+}
 
-bool _grouped(ChatMessage a, ChatMessage b) =>
-    a.mine == b.mine &&
-    sameChatDay(a.createdAt, b.createdAt) &&
-    a.createdAt.difference(b.createdAt).abs() <= chatGroupGap;
-
-/// Layout of message [i] in [newestFirst] (the reversed list the chat draws): a day separator above it, the time
-/// under it (last of its group, or not sent yet), a tight gap to the one before it.
-({bool daySeparator, bool showTime, bool tightTop}) chatRowLayout(List<ChatMessage> newestFirst, int i) {
+/// Layout of message [i] in [newestFirst] (the reversed list the chat draws): a day chip above it, the «رسائل جديدة»
+/// divider above it ([unreadFromId]), and whether it starts a run from one sender (the bubble's tail, 8 px above) or
+/// continues one (no tail, 2 px above). A run is broken by the other sender, a new day or the unread divider. Every
+/// bubble carries its own time, so a pause inside a run doesn't break it.
+({bool daySeparator, bool unreadDivider, bool tail, bool tightTop}) chatRowLayout(
+  List<ChatMessage> newestFirst,
+  int i, {
+  String? unreadFromId,
+}) {
   final m = newestFirst[i];
   final older = i + 1 < newestFirst.length ? newestFirst[i + 1] : null;
-  final newer = i > 0 ? newestFirst[i - 1] : null;
-  return (
-    daySeparator: older == null || !sameChatDay(older.createdAt, m.createdAt),
-    showTime: m.state != SendState.sent || newer == null || !_grouped(m, newer) || newer.state != SendState.sent,
-    tightTop: older != null && _grouped(m, older),
-  );
+  final daySeparator = older == null || !sameChatDay(older.createdAt, m.createdAt);
+  final unreadDivider = unreadFromId != null && m.id == unreadFromId;
+  final tail = older == null || daySeparator || unreadDivider || older.mine != m.mine;
+  return (daySeparator: daySeparator, unreadDivider: unreadDivider, tail: tail, tightTop: !tail);
 }
+
+/// Where «رسائل جديدة» goes when the chat opens: the oldest of the other person's unread messages after my last one
+/// (anything before my own reply was seen). Null when nothing of theirs is unread.
+String? firstUnreadId(List<ChatMessage> oldestFirst) {
+  String? first;
+  for (final m in oldestFirst) {
+    if (m.mine) {
+      first = null;
+    } else if (m.readAt == null && m.state == SendState.sent) {
+      first ??= m.id;
+    }
+  }
+  return first;
+}
+
+/// A message's own direction, from its first strong letter: Arabic (and other right-to-left scripts) → RTL, a Latin
+/// letter → LTR. Nothing strong (a number, emoji, punctuation) → LTR, so `07 9 12 34 567` reads in its own order and
+/// isn't reversed group by group inside the Arabic layout.
+TextDirection messageDirection(String text) {
+  for (final r in text.runes) {
+    if (_rtl(r)) return TextDirection.rtl;
+    if (_ltrLetter(r)) return TextDirection.ltr;
+  }
+  return TextDirection.ltr;
+}
+
+/// Arabic-Indic digits are numbers, not letters: they don't decide the direction
+bool _rtl(int r) =>
+    !(r >= 0x0660 && r <= 0x0669) && !(r >= 0x06F0 && r <= 0x06F9) && (r >= 0x0590 && r <= 0x08FF) || (r >= 0xFB1D && r <= 0xFDFF) || (r >= 0xFE70 && r <= 0xFEFF);
+
+bool _ltrLetter(int r) =>
+    (r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A) || (r >= 0xC0 && r <= 0x24F) || (r >= 0x370 && r <= 0x52F);

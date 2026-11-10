@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:naseebak_app/core/auth/auth_controller.dart';
+import 'package:naseebak_app/core/push/push_permission.dart';
 import 'package:naseebak_app/core/storage/token_store.dart';
 import 'package:naseebak_app/features/discovery/suggestion_card.dart';
 import 'package:naseebak_app/features/discovery/suggestion_models.dart';
@@ -51,7 +53,11 @@ class Harness {
     this.likedYou = 0,
     this.freeReply = false,
     this.itemsTab = 'new',
+    this.pushAllowed,
   }) : items = items ?? [card('s1')];
+
+  /// Notifications allowed on the phone (null: unknown, as the tests' default)
+  final bool? pushAllowed;
 
   /// Switch free_interest_reply
   final bool freeReply;
@@ -92,7 +98,10 @@ class Harness {
           'total': 1,
           'totalPages': 1,
         });
-    container = ProviderContainer(overrides: await testOverrides(adapter, store: MemoryTokenStore('t1')));
+    container = ProviderContainer(overrides: [
+      ...await testOverrides(adapter, store: MemoryTokenStore('t1')),
+      pushAllowedProvider.overrideWith((ref) async => pushAllowed),
+    ]);
     addTearDown(container.dispose);
     container.read(authControllerProvider);
     await tester.pumpWidget(const SizedBox());
@@ -192,7 +201,76 @@ void main() {
 
       expect(find.text('رصيدك لا يكفي'), findsOneWidget);
       expect(h.container.read(authControllerProvider).me!.credits, 0);
+      // The sheet's balance line follows (never «17» next to «رصيد غير كافٍ»)
+      expect(find.textContaining('رصيدكِ\u00A0الحالي:\u00A00'), findsOneWidget);
     });
+
+    testWidgets('the balance changed elsewhere: a refresh brings it, and 0 locks «مهتم»', (tester) async {
+      final h = Harness(credits: 17);
+      await h.pump(tester);
+      expect(h.container.read(authControllerProvider).me!.credits, 17);
+      // Set to 0 outside the app; pull to refresh: `/api/suggestions` carries the balance
+      h.adapter.handlers['GET /api/suggestions'] =
+          (_) => const FakeResponse(200, {'mutualView': true, 'credits': 0});
+      await tester.fling(find.byType(Scrollable).first, const Offset(0, 400), 1000);
+      await pumpFor(tester, 40);
+      expect(h.container.read(authControllerProvider).me!.credits, 0);
+    });
+
+    testWidgets('a reply to someone who already said «مهتم» says the match is immediate', (tester) async {
+      final h = Harness(items: [card('s1', likedYou: true)]);
+      await h.pump(tester);
+      await tester.tap(find.byKey(const Key('interested-s1')));
+      await pumpFor(tester);
+      expect(find.textContaining('فور الإرسال'), findsOneWidget);
+      expect(find.textContaining('إذا أبدى اهتمامه'), findsNothing);
+    });
+  });
+
+  testWidgets('on a 375 pt phone «مهتمون بك» shows in full next to its count', (tester) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final h = Harness(likedYou: 3);
+    await h.pump(tester);
+    final tab = find.byKey(const Key('feed-tab-interested'));
+    expect(find.descendant(of: tab, matching: find.text('مهتمون بك')), findsOneWidget);
+    expect(find.descendant(of: tab, matching: find.text('3')), findsOneWidget);
+    // Laid out whole: the text's own size isn't squeezed below its natural width
+    final text = tester.renderObject<RenderParagraph>(find.descendant(of: tab, matching: find.text('مهتمون بك')));
+    expect(text.didExceedMaxLines, isFalse);
+  });
+
+  testWidgets('360x640: the first card\'s «مهتم» / «لا» and the sheet\'s buttons are on screen without scrolling',
+      (tester) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final long = {
+      ...card('s1'),
+      'reason': 'يوافق ما تبحث عنه في التعليم والمدينة والتدين والعمر',
+      'candidate': {
+        'id': 'c-s1', 'firstName': 'أحمد', 'age': 30, 'city': 'عمّان', 'education': 'بكالوريوس',
+        'job': 'مهندس', 'maritalStatus': 'أعزب', 'religiosity': 'ملتزم', 'height': 178, 'about': 'نبذة طويلة ' * 20,
+      },
+    };
+    final h = Harness(items: [long]);
+    await h.pump(tester);
+    bool onScreen(Finder f) => tester.getRect(f).bottom <= 640;
+    // ignore: avoid_print
+    expect(onScreen(find.byKey(const Key('interested-s1'))), isTrue);
+    expect(onScreen(find.byKey(const Key('decline-s1'))), isTrue);
+    await tester.tap(find.byKey(const Key('interested-s1')));
+    await pumpFor(tester);
+    expect(onScreen(find.byKey(const Key('send-interest'))), isTrue);
+    expect(onScreen(find.byKey(const Key('interest-cancel'))), isTrue);
+    await tester.tap(find.byKey(const Key('interest-cancel')));
+    await pumpFor(tester);
+    // The details are one tap away
+    await tester.tap(find.byKey(const Key('card-details-open')));
+    await pumpFor(tester);
+    expect(find.byKey(const Key('card-details-open')), findsNothing);
+    expect(find.text('الصور تظهر بعد التوافق المتبادل فقط'), findsOneWidget);
   });
 
   testWidgets('credit on interest off: «مهتم» decides directly, no chat/family sheet', (tester) async {
@@ -216,7 +294,21 @@ void main() {
       expect(tester.widget<OutlinedButton>(find.byKey(const Key('decline-s1'))).onPressed, isNotNull);
       expect(find.byKey(const Key('zero-balance')), findsOneWidget);
       expect(find.byKey(const Key('recharge')), findsOneWidget);
-      expect(find.textContaining('واشحني رصيدكِ لتختاري'), findsOneWidget);
+      // One compact banner line (design P1-5)
+      expect(find.text('اشحني'), findsOneWidget);
+      expect(find.textContaining('«مهتم» يحتاج شحن الرصيد'), findsOneWidget);
+    });
+
+    testWidgets('one banner slot: the credit line wins over the notifications nudge (design P1-5)', (tester) async {
+      final broke = Harness(credits: 0, pushAllowed: false);
+      await broke.pump(tester);
+      expect(find.byKey(const Key('zero-balance')), findsOneWidget);
+      expect(find.byKey(const Key('push-off-card')), findsNothing);
+
+      final fine = Harness(pushAllowed: false);
+      await fine.pump(tester);
+      expect(find.byKey(const Key('zero-balance')), findsNothing);
+      expect(find.byKey(const Key('push-off-card')), findsOneWidget);
     });
 
     testWidgets('payments hidden in the app: no recharge link', (tester) async {

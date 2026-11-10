@@ -16,14 +16,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'helpers/fake_api.dart';
 
-Future<AuthState> settled(ProviderContainer c) async {
-  c.read(authControllerProvider);
-  for (var i = 0; i < 50 && c.read(authControllerProvider).status == AuthStatus.unknown; i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 5));
-  }
-  return c.read(authControllerProvider);
-}
-
 Future<void> idle() => Future<void>.delayed(const Duration(milliseconds: 20));
 
 const suspended = FakeResponse(403, {'error': 'تم إيقاف حسابك', 'code': 'SUSPENDED'});
@@ -55,7 +47,11 @@ void main() {
         ..on('POST', '/api/auth/verify-otp', const FakeResponse(400, {'error': 'رمز التحقق غير صحيح'}))
         ..on('POST', '/api/mobile/auth/token',
             FakeResponse(201, {'token': 'nsb_x', 'expiresAt': '2026-12-28T00:00:00Z', 'user': meJson()}));
+      // The button slides in (FadeSlideIn: 350 ms wait, 650 ms slide): let it arrive before tapping its centre (a 48 px button is
+      // exactly as tall as the slide is long)
+      await tester.pump(const Duration(milliseconds: 1200));
       await tester.ensureVisible(find.byKey(const Key('verify-otp')));
+      await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(find.byKey(const Key('verify-otp')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
@@ -186,7 +182,8 @@ void main() {
       final adapter = FakeAdapter()
         ..on('GET', '/api/mobile/me', FakeResponse(200, {
           'user': {...meJson(deactivated: true), 'deletion': {'scheduledFor': scheduled.toUtc().toIso8601String()}},
-        }));
+        }))
+        ..on('GET', '/api/pro', const FakeResponse(200, {'enabled': true, 'isPro': false, 'canBuy': true, 'offers': []}));
       final container = ProviderContainer(overrides: await testOverrides(adapter, store: MemoryTokenStore('t1')));
       addTearDown(container.dispose);
       await tester.runAsync(() => settled(container));
@@ -195,6 +192,9 @@ void main() {
       expect(find.text('طلبتِ حذف حسابكِ'), findsOneWidget);
       expect(find.textContaining('بعد 21 يوماً'), findsOneWidget);
       expect(find.text('إلغاء الحذف وإعادة التفعيل'), findsOneWidget);
+      // Not Pro: no Pro line (the page reads `/api/pro` where payments show)
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const Key('paused-pro')), findsNothing);
     });
   });
 
@@ -216,6 +216,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
     }
     expect(find.byKey(const Key('auth-hero-compact')), findsOneWidget);
+    // The number the code went to stays in view
+    expect(find.text('إلى \u20660796922292\u2069'), findsOneWidget);
     expect(tester.takeException(), isNull);
     final field = tester.getRect(find.byKey(const Key('otp-field')));
     expect(field.bottom, lessThanOrEqualTo(340));

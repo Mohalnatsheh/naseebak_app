@@ -5,7 +5,11 @@ import 'package:naseebak_app/core/push/push_permission.dart';
 import 'package:naseebak_app/core/storage/token_store.dart';
 import 'package:naseebak_app/features/notifications/notifications_screen.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'helpers/fake_api.dart';
+
+bool prefsSeen = false;
 
 Map<String, dynamic> row(String id, String title, {bool read = false}) =>
     {'id': id, 'type': 'SUPPORT', 'title': title, 'body': '', 'isRead': read, 'createdAt': '2026-10-30T10:00:00.000Z'};
@@ -14,6 +18,55 @@ Map<String, dynamic> page(List<Map<String, dynamic>> rows) =>
     {'notifications': rows, 'page': 1, 'total': rows.length, 'totalPages': 1};
 
 void main() {
+  testWidgets('home asks for notifications once, with what they are for; «لاحقاً» never asks again', (tester) async {
+    late SharedPreferences prefs;
+    Future<void> pump(bool? allowed) async {
+      final overrides = await testOverrides(FakeAdapter(), prefs: {
+        if (prefsSeen) pushExplainedKey: true,
+      });
+      await tester.pumpWidget(ProviderScope(
+        key: UniqueKey(),
+        overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => allowed)],
+        child: rtlApp(const Scaffold(body: PushAskGate())),
+      ));
+      prefs = await SharedPreferences.getInstance();
+      await tester.pumpAndSettle();
+    }
+
+    // Already allowed or unknown: no sheet
+    prefsSeen = false;
+    await pump(true);
+    expect(find.byType(PushAskSheet), findsNothing);
+    await pump(null);
+    expect(find.byType(PushAskSheet), findsNothing);
+    // Not allowed yet, never explained: the sheet, before any system prompt
+    await pump(false);
+    expect(find.byType(PushAskSheet), findsOneWidget);
+    expect(find.textContaining('عندما يبدي أحدٌ اهتمامه'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('push-ask-later')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PushAskSheet), findsNothing);
+    expect(prefs.getBool(pushExplainedKey), isTrue);
+    prefsSeen = true;
+    await pump(false);
+    expect(find.byType(PushAskSheet), findsNothing);
+  });
+
+  testWidgets('«السماح» then a refusal on that first prompt: no second «how to enable» sheet at once', (tester) async {
+    prefsSeen = false;
+    final overrides = await testOverrides(FakeAdapter());
+    await tester.pumpWidget(ProviderScope(
+      overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => false)],
+      child: rtlApp(const Scaffold(body: PushAskGate())),
+    ));
+    await tester.pumpAndSettle();
+    // No Firebase in tests: the system answer counts as a refusal
+    await tester.tap(find.byKey(const Key('push-ask-allow')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PushAskSheet), findsNothing);
+    expect(find.byType(PushStepsSheet), findsNothing);
+  });
+
   testWidgets('notifications off: the card shows, «لاحقاً» hides it on home; on: nothing', (tester) async {
     Future<void> pump(bool? allowed, {bool dismissible = false}) async {
       final overrides = await testOverrides(FakeAdapter());
@@ -34,6 +87,18 @@ void main() {
     expect(find.text('الإشعارات غير مفعّلة'), findsOneWidget);
     expect(find.text('فعّل الإشعارات'), findsOneWidget);
     await tester.tap(find.byTooltip('لاحقاً'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('push-off-card')), findsNothing);
+
+    // «لاحقاً» lasts 7 days, also after the app restarts (design P1-5)
+    final overrides = await testOverrides(FakeAdapter(), prefs: {
+      pushCardHiddenUntilKey: DateTime.now().add(const Duration(days: 6)).millisecondsSinceEpoch,
+    });
+    await tester.pumpWidget(ProviderScope(
+      key: UniqueKey(),
+      overrides: [...overrides, pushAllowedProvider.overrideWith((ref) async => false)],
+      child: rtlApp(const Scaffold(body: PushOffCard(dismissible: true))),
+    ));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('push-off-card')), findsNothing);
   });

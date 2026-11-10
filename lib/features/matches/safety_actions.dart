@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/api_exception.dart';
+import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/common.dart';
+import '../chat/chat_format.dart' show messageDirection;
 import '../home/gendered_copy.dart';
 import 'matches_repository.dart';
 
@@ -44,10 +46,11 @@ Future<bool> reportAndBlock(
   required bool viewerFemale,
   String? body,
 }) async {
-  final res = await showModalBottomSheet<(String, String)>(
+  final res = await showModalBottomSheet<ReportAnswer>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    barrierLabel: 'إغلاق',
     builder: (_) => ReportSheet(
       title: 'إبلاغ وحظر $name',
       description: body ?? reportBlockText(viewerFemale),
@@ -56,7 +59,7 @@ Future<bool> reportAndBlock(
   );
   if (res == null || !context.mounted) return false;
   try {
-    await ref.read(matchesRepositoryProvider).reportAndBlock(userId, res.$1, details: res.$2);
+    await ref.read(matchesRepositoryProvider).reportAndBlock(userId, res.reason, details: res.details);
     if (context.mounted) showSnack(context, 'تم الإبلاغ والحظر. سيراجع فريق نصيبك البلاغ.');
     return true;
   } catch (e) {
@@ -89,14 +92,48 @@ Future<bool> confirmAndUnblock(
 }
 
 /// Report reasons of `POST /api/reports`.
+/// What the report sheet returns: the reason, the details, and whether the member chose the action that also ends
+/// (or blocks) rather than «إبلاغ فقط» ([end] false)
+class ReportAnswer {
+  const ReportAnswer(this.reason, this.details, {this.end = true});
+  final String reason;
+  final String details;
+  final bool end;
+}
+
 class ReportSheet extends StatefulWidget {
-  const ReportSheet({super.key, this.title = 'إبلاغ', this.description, this.submitLabel = 'إرسال البلاغ'});
+  const ReportSheet({
+    super.key,
+    this.title = 'إبلاغ',
+    this.description,
+    this.submitLabel = 'إرسال البلاغ',
+    this.submitConsequence,
+    this.reportOnlyLabel,
+    this.reportOnlyConsequence,
+    this.initialDetails,
+    this.reportedMessage,
+  });
 
   final String title;
+
+  /// «إبلاغ عن الرسالة»: the reported message's one-line snippet, shown as a quote above the reasons (its id goes with
+  /// the report)
+  final String? reportedMessage;
+
+  /// Prefilled details (e.g. the chat message being reported), still editable
+  final String? initialDetails;
 
   /// What happens after sending (e.g. the block that comes with it)
   final String? description;
   final String submitLabel;
+
+  /// Under the submit button: exactly what it does besides the report (ends the chat, blocks, closes the match)
+  final String? submitConsequence;
+
+  /// A second, milder choice (the chat's «إبلاغ فقط»: the report is filed and nothing else changes). It comes first
+  /// and returns [ReportAnswer.end] false.
+  final String? reportOnlyLabel;
+  final String? reportOnlyConsequence;
 
   @override
   State<ReportSheet> createState() => _ReportSheetState();
@@ -111,7 +148,7 @@ class _ReportSheetState extends State<ReportSheet> {
     ('OTHER', 'سبب آخر'),
   ];
   String? _reason;
-  final _details = TextEditingController();
+  late final _details = TextEditingController(text: widget.initialDetails ?? '');
 
   @override
   void dispose() {
@@ -133,6 +170,34 @@ class _ReportSheetState extends State<ReportSheet> {
               const SizedBox(height: 6),
               Text(widget.description!, style: const TextStyle(height: 1.6)),
             ],
+            if (widget.reportedMessage != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                key: const Key('report-message'),
+                padding: const EdgeInsetsDirectional.fromSTEB(10, 6, 10, 6),
+                decoration: BoxDecoration(
+                  color: AppColors.line.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                  border: BorderDirectional(start: BorderSide(color: AppColors.danger.withValues(alpha: 0.6), width: 3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'الرسالة المُبلَّغ عنها',
+                      style: AppText.caption.copyWith(fontWeight: FontWeight.w600, color: AppColors.muted),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      widget.reportedMessage!,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      textDirection: messageDirection(widget.reportedMessage!),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 8),
             RadioGroup<String>(
               groupValue: _reason,
@@ -151,14 +216,47 @@ class _ReportSheetState extends State<ReportSheet> {
               decoration: const InputDecoration(hintText: 'تفاصيل (اختياري)'),
             ),
             const SizedBox(height: 8),
-            FilledButton(
-              key: const Key('report-submit'),
-              onPressed: _reason == null ? null : () => Navigator.of(context).pop((_reason!, _details.text)),
-              child: Text(widget.submitLabel),
-            ),
+            if (widget.reportOnlyLabel != null) ...[
+              FilledButton(
+                key: const Key('report-only'),
+                onPressed: _reason == null
+                    ? null
+                    : () => Navigator.of(context).pop(ReportAnswer(_reason!, _details.text, end: false)),
+                child: Text(widget.reportOnlyLabel!),
+              ),
+              if (widget.reportOnlyConsequence != null) _Consequence(widget.reportOnlyConsequence!),
+              const SizedBox(height: 10),
+              OutlinedButton(
+                key: const Key('report-submit'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.danger,
+                  side: BorderSide(color: AppColors.danger.withValues(alpha: 0.5)),
+                ),
+                onPressed: _reason == null ? null : () => Navigator.of(context).pop(ReportAnswer(_reason!, _details.text)),
+                child: Text(widget.submitLabel),
+              ),
+            ] else
+              FilledButton(
+                key: const Key('report-submit'),
+                onPressed: _reason == null ? null : () => Navigator.of(context).pop(ReportAnswer(_reason!, _details.text)),
+                child: Text(widget.submitLabel),
+              ),
+            if (widget.submitConsequence != null) _Consequence(widget.submitConsequence!, key: const Key('report-consequence')),
           ],
         ),
       ),
     );
   }
+}
+
+/// One muted line under a report button: what it does
+class _Consequence extends StatelessWidget {
+  const _Consequence(this.text, {super.key});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(text, textAlign: TextAlign.center, style: AppText.caption.copyWith(color: AppColors.muted)),
+      );
 }

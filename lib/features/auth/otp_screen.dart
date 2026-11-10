@@ -87,7 +87,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
     if (_verifying) return;
     final code = normalizeOtp(_controller.text);
     if (code == null) {
-      setState(() => _error = 'أدخل الرمز المكوّن من 6 أرقام');
+      setState(() => _error = 'الرمز مكوّن من 6 أرقام');
       return;
     }
     setState(() {
@@ -133,7 +133,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
         appBar: AppBar(),
         body: MessageView(
           icon: Icons.sms_outlined,
-          title: 'ابدأ بإدخال رقمك',
+          title: 'الخطوة الأولى: رقمك',
           actionLabel: 'رجوع',
           onAction: () => context.go('/auth/phone'),
         ),
@@ -147,14 +147,19 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
         children: [
           AuthHero(
             showBack: true,
-            title: 'أدخل رمز التحقق',
+            title: 'رمز التحقق',
             subtitle: 'أرسلنا رمزاً من 6 أرقام ${pending.countryCode == 'SA' ? 'عبر واتساب' : 'برسالة نصية'} إلى \u2066${pending.phone}\u2069',
+            // With the keyboard open the subtitle folds away: the number stays
+            compactLine: 'إلى \u2066${pending.phone}\u2069',
           ),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
               children: [
+                // Keyed: an error line inserted above must not restart the entrance (the button vanished for a second
+                // after every wrong code)
                 FadeSlideIn(
+                  key: const ValueKey('otp-code-in'),
                   delay: const Duration(milliseconds: 250),
                   child: Directionality(
                     textDirection: TextDirection.ltr,
@@ -180,7 +185,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
                             inputFormatters: [SafeInputFormatter(allowed: RegExp(r'[0-9٠-٩۰-۹]'), maxLength: 6)],
                             showCursor: false,
                             enableInteractiveSelection: false,
-                            style: const TextStyle(color: Colors.transparent, fontSize: 1),
+                            style: AppText.invisible,
                             decoration: const InputDecoration(
                               counterText: '',
                               border: InputBorder.none,
@@ -205,6 +210,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
                 ],
                 const SizedBox(height: 24),
                 FadeSlideIn(
+                  key: const ValueKey('otp-verify-in'),
                   delay: const Duration(milliseconds: 350),
                   child: LoadingButton(
                     key: const Key('verify-otp'),
@@ -289,7 +295,7 @@ class _CodeBox extends StatelessWidget {
         child: Text(
           char ?? '',
           key: ValueKey(char),
-          style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.navy),
+          style: AppText.title.copyWith(fontWeight: FontWeight.w800, color: AppColors.navy),
         ),
       ),
     );

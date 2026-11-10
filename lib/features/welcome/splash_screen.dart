@@ -1,11 +1,14 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/providers.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/widgets/alpha_fade.dart';
 import '../../shared/widgets/common.dart';
 import 'brand_visuals.dart';
 import 'welcome_state.dart';
@@ -14,15 +17,35 @@ import 'welcome_state.dart';
 /// the tagline. The router waits for [splashDoneProvider]; if the saved session could not be checked (no network)
 /// the screen stays with a retry.
 class SplashScreen extends ConsumerStatefulWidget {
-  const SplashScreen({super.key, this.duration = const Duration(milliseconds: 2600)});
-  final Duration duration;
+  const SplashScreen({super.key, this.duration});
+
+  /// Fixed length (tests); otherwise [firstLaunchDuration] once per install, [quickDuration] after that
+  final Duration? duration;
+
+  /// The full animation, on the first launch only
+  static const firstLaunchDuration = Duration(milliseconds: 2600);
+
+  /// Every later launch (also from a push or a link): a short brand moment while the session is restored
+  static const quickDuration = Duration(milliseconds: 600);
+
+  /// Shared preferences: the full animation has played on this install
+  static const playedKey = 'splash_played';
 
   @override
   ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
 class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(vsync: this, duration: widget.duration);
+  late final _c = AnimationController(vsync: this, duration: _duration());
+
+  Duration _duration() {
+    final fixed = widget.duration;
+    if (fixed != null) return fixed;
+    final prefs = ref.read(sharedPreferencesProvider);
+    if (prefs.getBool(SplashScreen.playedKey) ?? false) return SplashScreen.quickDuration;
+    prefs.setBool(SplashScreen.playedKey, true);
+    return SplashScreen.firstLaunchDuration;
+  }
 
   // Phases of the one timeline
   late final _ring = CurvedAnimation(parent: _c, curve: const Interval(0.0, 0.55, curve: Curves.easeInOutCubic));
@@ -30,9 +53,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
   late final _glow = CurvedAnimation(parent: _c, curve: const Interval(0.45, 0.8, curve: Curves.easeOut));
   late final _tagline = CurvedAnimation(parent: _c, curve: const Interval(0.6, 0.95, curve: Curves.easeOutCubic));
 
+  bool _started = false;
+
+  /// The ring draws itself once; with reduced motion the splash is shown at once, still and complete (DS-22)
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    if (AppMotion.reduced(context)) _c.duration = const Duration(milliseconds: 1);
     _c.forward().whenComplete(() {
       if (mounted) ref.read(splashDoneProvider.notifier).done();
     });
@@ -49,7 +78,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
     final auth = ref.watch(authControllerProvider);
     final failed = auth.status == AuthStatus.restoreFailed;
     final done = ref.watch(splashDoneProvider);
-    return Scaffold(
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
       backgroundColor: AppColors.navyDeep,
       body: NightBackdrop(
         child: SafeArea(
@@ -65,23 +96,27 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
                     child: Stack(
                       alignment: Alignment.center,
                       children: [
-                        // Soft gold glow behind the logo
-                        Opacity(
-                          opacity: _glow.value * 0.9,
-                          child: Container(
-                            width: 150,
-                            height: 150,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              boxShadow: [BoxShadow(color: AppColors.gold.withValues(alpha: 0.35), blurRadius: 60, spreadRadius: 6)],
-                            ),
+                        // Soft gold glow behind the logo; its fade is in the shadow's own colour (no opacity layer
+                        // over a blurred shadow: QA A-L10)
+                        Container(
+                          width: 150,
+                          height: 150,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.gold.withValues(alpha: 0.35 * _glow.value * 0.9),
+                                blurRadius: 60,
+                                spreadRadius: 6,
+                              ),
+                            ],
                           ),
                         ),
                         CustomPaint(size: const Size(190, 190), painter: _RingPainter(_ring.value)),
                         Transform.translate(
                           offset: Offset(0, (1 - _logo.value) * 18),
-                          child: Opacity(
-                            opacity: _logo.value.clamp(0, 1),
+                          child: AlphaFade(
+                            opacity: _logo.value.clamp(0, 1).toDouble(),
                             child: Transform.scale(scale: 0.85 + 0.15 * _logo.value, child: const BrandLogo(height: 70, onDark: true)),
                           ),
                         ),
@@ -89,14 +124,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
                     ),
                   ),
                   const SizedBox(height: 18),
-                  Opacity(
+                  AlphaFade(
                     opacity: _tagline.value,
                     child: Transform.translate(
                       offset: Offset(0, (1 - _tagline.value) * 14),
                       child: Column(children: [
                         Text(
                           'زواج تقليدي بروح عصرية',
-                          style: TextStyle(color: AppColors.goldLight.withValues(alpha: 0.95), fontSize: 16, letterSpacing: 0.3),
+                          style: AppText.body.copyWith(color: AppColors.goldLight.withValues(alpha: 0.95), letterSpacing: 0.3),
                         ),
                       ]),
                     ),
@@ -108,7 +143,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
                       child: Text(
                         auth.error ?? ApiException.networkMessage,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.6),
+                        style: AppText.body.copyWith(color: Colors.white, height: 1.6),
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -130,7 +165,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> with SingleTickerPr
           ),
         ),
       ),
-    );
+    ));
   }
 }
 
@@ -173,10 +208,16 @@ class _Dots extends StatefulWidget {
 class _DotsState extends State<_Dots> with SingleTickerProviderStateMixin {
   late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
 
+  /// Loops forever: never with reduced motion (DS-22)
   @override
-  void initState() {
-    super.initState();
-    if (loopingMotion) _c.repeat();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final run = loopingMotion && !AppMotion.reduced(context);
+    if (run && !_c.isAnimating) {
+      _c.repeat();
+    } else if (!run && _c.isAnimating) {
+      _c.stop();
+    }
   }
 
   @override

@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/theme/app_theme.dart';
+import 'brand_kit.dart';
 
 /// The brand logo; `onDark` paints it white (navy backgrounds).
 class BrandLogo extends StatelessWidget {
@@ -88,7 +89,11 @@ class MessageView extends StatelessWidget {
     this.actionLabel,
     this.onAction,
     this.iconColor,
+    this.art,
   });
+
+  /// A line-art drawing (empty states, P2-2) in place of the icon
+  final LineArtKind? art;
 
   final IconData icon;
   final String title;
@@ -106,15 +111,18 @@ class MessageView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: (iconColor ?? AppColors.navy).withValues(alpha: 0.08),
-                shape: BoxShape.circle,
+            if (art != null)
+              LineArt(art!)
+            else
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: (iconColor ?? AppColors.navy).withValues(alpha: 0.08),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 34, color: iconColor ?? AppColors.navy),
               ),
-              child: Icon(icon, size: 34, color: iconColor ?? AppColors.navy),
-            ),
             const SizedBox(height: 18),
             Text(title, textAlign: TextAlign.center, style: theme.textTheme.titleMedium),
             if (body != null) ...[
@@ -158,6 +166,21 @@ class ErrorView extends StatelessWidget {
   }
 }
 
+/// Card-shaped placeholders while the suggestions load (P3)
+class CardSkeletonList extends StatelessWidget {
+  const CardSkeletonList({super.key, this.count = 2});
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => ListView.separated(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        itemCount: count,
+        separatorBuilder: (_, _) => const SizedBox(height: 12),
+        itemBuilder: (_, _) => const CardSkeleton(),
+      );
+}
+
 /// Grey placeholder blocks while a list loads.
 class SkeletonList extends StatelessWidget {
   const SkeletonList({super.key, this.count = 4, this.itemHeight = 120});
@@ -197,16 +220,82 @@ class _SkeletonBoxState extends State<SkeletonBox> with SingleTickerProviderStat
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Still with reduced motion
+    if (AppMotion.reduced(context)) _c.stop();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween<double>(begin: 0.45, end: 1).animate(_c),
-      child: Container(
+    // The shimmer moves through the colour, not an opacity layer (QA A-L10: Impeller's inherited-opacity warnings)
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, _) => Container(
         height: widget.height,
         width: widget.width,
         decoration: BoxDecoration(
-          color: AppColors.line.withValues(alpha: 0.7),
+          color: Color.lerp(AppColors.line.withValues(alpha: 0.45), AppColors.line, _c.value),
           borderRadius: BorderRadius.circular(widget.radius),
         ),
+      ),
+    );
+  }
+}
+
+/// The page's one banner slot line (design P1-5): a navy (or amber, for a warning) tile, one compact line of text,
+/// and at most one action. Only the most urgent item of a page shows here.
+class BannerLine extends StatelessWidget {
+  const BannerLine({
+    super.key,
+    required this.icon,
+    required this.text,
+    this.actionKey,
+    this.actionLabel,
+    this.onAction,
+    this.warning = false,
+  });
+
+  final IconData icon;
+  final String text;
+  final Key? actionKey;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+  final bool warning;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 56),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: warning ? AppColors.warningBg : AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: warning ? AppColors.warning.withValues(alpha: 0.35) : AppColors.line),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: warning ? AppColors.warning : AppColors.navy,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, size: 18, color: Colors.white),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Text(text, style: AppText.label.copyWith(color: AppColors.ink, fontWeight: FontWeight.w500))),
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(width: 8),
+            FilledButton(
+              key: actionKey,
+              style: FilledButton.styleFrom(minimumSize: const Size(0, 44), padding: const EdgeInsets.symmetric(horizontal: 14)),
+              onPressed: onAction,
+              child: Text(actionLabel!),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -242,7 +331,7 @@ class InfoBanner extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(text, style: TextStyle(color: fg, fontSize: 14, height: 1.55)),
+                Text(text, style: AppText.labelRegular.copyWith(color: fg, height: 1.55)),
                 if (action != null) ...[const SizedBox(height: 6), action!],
               ],
             ),
@@ -260,6 +349,8 @@ class Pill extends StatelessWidget {
   final Color color;
   final IconData? icon;
 
+  Color get ink => color == AppColors.gold ? AppColors.goldText : color;
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -272,7 +363,9 @@ class Pill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (icon != null) ...[Icon(icon, size: 14, color: color), const SizedBox(width: 4)],
-          Text(text, style: TextStyle(color: color, fontSize: 12.5, fontWeight: FontWeight.w700)),
+          // Gold text on a light pill is accent-ink (DS-02: gold measures 2.8:1)
+          // Wraps inside a narrow parent instead of overflowing (a long next-step line)
+          Flexible(child: Text(text, style: AppText.caption.copyWith(color: ink, fontWeight: FontWeight.w700))),
         ],
       ),
     );
@@ -281,7 +374,7 @@ class Pill extends StatelessWidget {
 
 /// Number badge for counts.
 class CountBadge extends StatelessWidget {
-  const CountBadge({super.key, required this.count, this.color = AppColors.gold});
+  const CountBadge({super.key, required this.count, this.color = AppColors.navy});
   final int count;
   final Color color;
 
@@ -294,8 +387,9 @@ class CountBadge extends StatelessWidget {
       decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(12)),
       child: Text(
         count > 99 ? '99+' : '$count',
+        textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.2),
         textAlign: TextAlign.center,
-        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+        style: AppText.caption.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
       ),
     );
   }
@@ -306,7 +400,13 @@ void showSnack(BuildContext context, String message, {SnackBarAction? action}) {
   if (messenger == null) return;
   messenger
     ..hideCurrentSnackBar()
-    ..showSnackBar(SnackBar(content: Text(message), action: action));
+    // Never left on screen over the composer or the buttons (Flutter 3.32+ keeps one with an action until tapped),
+    // except for a screen-reader user, who needs time to reach its action (Flutter's behaviour before 3.32)
+    ..showSnackBar(SnackBar(
+      content: Text(message),
+      action: action,
+      persist: action != null && (MediaQuery.maybeAccessibleNavigationOf(context) ?? false),
+    ));
 }
 
 Future<bool> confirmDialog(

@@ -7,8 +7,13 @@ import '../core/auth/auth_controller.dart';
 import '../core/push/push_service.dart';
 import '../core/routing/router.dart';
 import '../core/update/app_update.dart';
+import '../features/home/counts.dart';
 import '../core/theme/app_theme.dart';
 import 'maintenance_gate.dart';
+import 'material_labels.dart';
+
+/// The largest system text size the app follows
+const appMaxTextScale = 2.0;
 
 /// Arabic-first, right-to-left.
 class NaseebakApp extends ConsumerWidget {
@@ -21,6 +26,10 @@ class NaseebakApp extends ConsumerWidget {
     ref.listen(authControllerProvider.select((a) => a.isSignedIn), (_, signedIn) {
       final push = ref.read(pushServiceProvider);
       signedIn ? push.start() : push.reset();
+    });
+    // The balance the counts carry (credit on interest) keeps the stored one fresh: it changes elsewhere too
+    ref.listen(countsProvider.select((c) => c.valueOrNull?.credits), (_, credits) {
+      if (credits != null) ref.read(authControllerProvider.notifier).updateCredits(credits);
     });
     // Analytics reports split by member, gender and country (no name or phone)
     ref.listen(authControllerProvider.select((a) => a.me?.id), (_, _) {
@@ -39,14 +48,15 @@ class NaseebakApp extends ConsumerWidget {
       locale: const Locale('ar'),
       supportedLocales: const [Locale('ar'), Locale('en')],
       localizationsDelegates: const [
-        GlobalMaterialLocalizations.delegate,
+        AppMaterialLocalizationsDelegate(),
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
       builder: (context, child) => MediaQuery(
-        // Keep the layout readable with very large system fonts
+        // Large system text is honoured up to 2× (QA A-M05: it stopped at 1.3×); the few fixed-height bars (tab bar,
+        // badges) clamp their own text
         data: MediaQuery.of(context).copyWith(
-          textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.3),
+          textScaler: MediaQuery.textScalerOf(context).clamp(maxScaleFactor: appMaxTextScale),
         ),
         // A required update replaces every screen; an optional one shows a card (Admin → Mobile app versions);
         // maintenance mode (Admin → Settings) replaces every screen while it is on

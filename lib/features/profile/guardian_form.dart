@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/localization/safe_input_formatter.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/theme/app_theme.dart';
@@ -49,19 +50,24 @@ class GuardianFields {
 }
 
 class GuardianFieldsView extends ConsumerWidget {
-  const GuardianFieldsView({super.key, required this.fields, required this.errors, required this.onChanged});
+  const GuardianFieldsView({super.key, required this.fields, required this.errors, required this.onFieldChanged});
   final GuardianFields fields;
   final Map<String, String?> errors;
-  final VoidCallback onChanged;
+
+  /// An answer changed (its key: `parentName`, `relationship`, `parentPhone`, `address`, `consent`): the owner of
+  /// [errors] clears that one and rebuilds
+  final ValueChanged<String> onFieldChanged;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final country = ref.watch(authControllerProvider).me?.country;
+    void changed(String key) => onFieldChanged(key);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         TextField(
           controller: fields.name,
+          onChanged: (_) => changed('parentName'),
           decoration: InputDecoration(labelText: 'اسم وليّ الأمر', errorText: errors['parentName']),
         ),
         const SizedBox(height: 12),
@@ -73,7 +79,7 @@ class GuardianFieldsView extends ConsumerWidget {
           ],
           onChanged: (v) {
             fields.relationship = v;
-            onChanged();
+            changed('relationship');
           },
         ),
         const SizedBox(height: 12),
@@ -82,6 +88,8 @@ class GuardianFieldsView extends ConsumerWidget {
           child: TextField(
             controller: fields.phone,
             keyboardType: TextInputType.phone,
+            inputFormatters: [LatinDigitsFormatter()],
+            onChanged: (_) => changed('parentPhone'),
             decoration: InputDecoration(
               labelText: 'رقم ${country?.phoneWord ?? 'هاتف'} وليّ الأمر',
               hintText: country?.phoneExample,
@@ -92,6 +100,7 @@ class GuardianFieldsView extends ConsumerWidget {
         const SizedBox(height: 12),
         TextField(
           controller: fields.address,
+          onChanged: (_) => changed('address'),
           decoration: InputDecoration(labelText: 'العنوان (المدينة والحي)', errorText: errors['address']),
         ),
         const SizedBox(height: 4),
@@ -99,18 +108,18 @@ class GuardianFieldsView extends ConsumerWidget {
           value: fields.consent,
           onChanged: (v) {
             fields.consent = v ?? false;
-            onChanged();
+            changed('consent');
           },
           controlAffinity: ListTileControlAffinity.leading,
           contentPadding: EdgeInsets.zero,
           title: const Text(
             'أوافق على مشاركة اسم وليّ أمري ورقمه مع عائلة الطرف الآخر بعد قبول تعارف عائلي.',
-            style: TextStyle(fontSize: 14),
+            style: AppText.labelRegular,
           ),
         ),
-        const Text(
+        Text(
           'لا تظهر هذه البيانات لأي عضو إلا بعد تعارف عائلي مقبول وبموافقتك.',
-          style: TextStyle(color: AppColors.muted, fontSize: 12.5),
+          style: AppText.caption.copyWith(color: AppColors.muted),
         ),
       ],
     );
@@ -132,6 +141,9 @@ Map<String, String?> validateGuardian(GuardianFields f) {
 }
 
 /// «بيانات وليّ الأمر» (also opened from a family step that answered `GUARDIAN_REQUIRED`).
+/// What the guardian screen returns when it saved (null: left without saving)
+enum GuardianSaved { saved, consented }
+
 class GuardianScreen extends ConsumerStatefulWidget {
   const GuardianScreen({super.key});
 
@@ -199,7 +211,8 @@ class _GuardianScreenState extends ConsumerState<GuardianScreen> {
       ref.invalidate(myProfileProvider);
       if (mounted) {
         showSnack(context, 'تم حفظ بيانات وليّ الأمر');
-        Navigator.of(context).maybePop();
+        // Opened from a family step: it goes on with what was saved (and whether sharing was agreed here)
+        Navigator.of(context).maybePop(_fields.consent ? GuardianSaved.consented : GuardianSaved.saved);
       }
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
@@ -210,8 +223,10 @@ class _GuardianScreenState extends ConsumerState<GuardianScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Guardian consent sits in the same warm sand «مجلس» as the family steps (design S3)
     return Scaffold(
-      appBar: AppBar(title: const Text('بيانات وليّ الأمر')),
+      backgroundColor: AppColors.sand,
+      appBar: AppBar(title: const Text('بيانات وليّ الأمر'), backgroundColor: AppColors.sand),
       body: _loading
           ? const SkeletonList(count: 4, itemHeight: 56)
           : _loadError != null
@@ -219,7 +234,12 @@ class _GuardianScreenState extends ConsumerState<GuardianScreen> {
               : ListView(
                   padding: const EdgeInsets.all(20),
                   children: [
-                    GuardianFieldsView(fields: _fields, errors: _errors, onChanged: () => setState(() {})),
+                    GuardianFieldsView(
+                      fields: _fields,
+                      errors: _errors,
+                      // An error goes as soon as its answer changes (not only at the next save)
+                      onFieldChanged: (key) => setState(() => _errors = {..._errors}..remove(key)),
+                    ),
                     if (_error != null) ...[const SizedBox(height: 12), InfoBanner(text: _error!, tone: BannerTone.danger)],
                     const SizedBox(height: 20),
                     LoadingButton(label: 'حفظ', loading: _saving, onPressed: _save),

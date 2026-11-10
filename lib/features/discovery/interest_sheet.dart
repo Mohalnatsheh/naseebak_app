@@ -22,6 +22,7 @@ class InterestSheet extends StatefulWidget {
     this.viewerFemale = false,
     this.onNoCredits,
     this.free = false,
+    this.likedYou = false,
   });
 
   final String firstName;
@@ -42,6 +43,9 @@ class InterestSheet extends StatefulWidget {
 
   /// A reply to someone who already said «مهتم» with free_interest_reply on: no credit is taken
   final bool free;
+
+  /// The other side already said «مهتم»: sending makes the match at once
+  final bool likedYou;
 
   /// A [DecisionResult] when sent, the [ApiException] when the card is gone (404: the sheet closes so the
   /// card can leave the list), null when dismissed.
@@ -65,11 +69,14 @@ class _InterestSheetState extends State<InterestSheet> {
   String? _error;
   String? _errorCode;
 
+  /// The balance shown; 0 once the server answered NO_CREDITS
+  late int? _credits = widget.credits;
+
   String _g(String m, String f) => forViewer(widget.viewerFemale, m, f);
 
   Future<void> _send() async {
     if (_pref == null) {
-      setState(() => _error = '${_g('اختر', 'اختاري')} طريقة التعارف: محادثة أو تعارف عائلي');
+      setState(() => _error = 'يُرجى اختيار طريقة التعارف: محادثة أو تعارف عائلي');
       return;
     }
     if (_pref == 'FAMILY' && !widget.guardianConsented && !_consent) {
@@ -94,6 +101,7 @@ class _InterestSheetState extends State<InterestSheet> {
       final code = e.code ?? (e.kind == ApiErrorKind.noCredits ? 'NO_CREDITS' : null);
       if (code == 'NO_CREDITS') widget.onNoCredits?.call();
       setState(() {
+        if (code == 'NO_CREDITS') _credits = 0;
         _error = e.message;
         _errorCode = code;
       });
@@ -115,18 +123,27 @@ class _InterestSheetState extends State<InterestSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // The choices scroll; «إرسال «مهتم»» and «إلغاء» stay under them, in view on a short phone (360x640)
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Flexible(
+            child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text('${_g('مهتم', 'مهتمة')} بـ${widget.firstName}', style: theme.textTheme.titleLarge),
             const SizedBox(height: 6),
             Text(
-              '${forPartner(widget.viewerFemale, 'إذا أبدى اهتمامه', 'إذا أبدت اهتمامها')} أيضاً، يتم التوافق ونبدأ '
-              'بالطريقة التي ${_g('تختارها', 'تختارينها')}.',
+              widget.likedYou
+                  ? '${forPartner(widget.viewerFemale, 'أبدى اهتمامه', 'أبدت اهتمامها')} ${_g('بك', 'بكِ')}، فيتم التوافق '
+                      'فور الإرسال ونبدأ بالطريقة التي ${_g('تختارها', 'تختارينها')}.'
+                  : '${forPartner(widget.viewerFemale, 'إذا أبدى اهتمامه', 'إذا أبدت اهتمامها')} أيضاً، يتم التوافق ونبدأ '
+                      'بالطريقة التي ${_g('تختارها', 'تختارينها')}.',
               style: theme.textTheme.bodyMedium?.copyWith(color: AppColors.muted),
             ),
             const SizedBox(height: 18),
@@ -136,7 +153,7 @@ class _InterestSheetState extends State<InterestSheet> {
                 selected: _pref == 'CHAT',
                 icon: Icons.chat_bubble_outline_rounded,
                 title: 'محادثة قصيرة داخل التطبيق',
-                body: 'نصية فقط ومراقبة، لمدة 14 يوماً، ويمكن الانتقال للتعارف العائلي لاحقاً.',
+                body: 'مراقبة ولمدة 14 يوماً، ويمكن الانتقال للتعارف العائلي لاحقاً.',
                 onTap: _busy ? null : () => setState(() => _pick('CHAT')),
               ),
             if (widget.chatAvailable) const SizedBox(height: 10),
@@ -161,7 +178,7 @@ class _InterestSheetState extends State<InterestSheet> {
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'أوافق على مشاركة اسم وليّ أمري ورقمه مع عائلة الطرف الآخر عند التوافق.',
-                  style: TextStyle(fontSize: 14),
+                  style: AppText.labelRegular,
                 ),
               ),
             ],
@@ -176,24 +193,47 @@ class _InterestSheetState extends State<InterestSheet> {
             ] else if (widget.creditOnInterest) ...[
               const SizedBox(height: 12),
               InfoBanner(
-                text: 'يُخصم رصيد واحد عند إرسال «مهتم»${widget.credits != null ? ' · رصيدك الحالي ${widget.credits}' : ''}.',
+                key: const Key('interest-balance'),
+                // The balance on its own line, never split from its number
+                text: 'يُخصم رصيد واحد عند إرسال «مهتم».'
+                    '${_credits != null ? '\n${widget.viewerFemale ? 'رصيدكِ' : 'رصيدك'}\u00A0الحالي:\u00A0$_credits' : ''}',
                 icon: Icons.account_balance_wallet_outlined,
               ),
             ],
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              InfoBanner(
-                text: _error!,
-                tone: BannerTone.danger,
-                action: _errorAction(context),
-              ),
-            ],
-            const SizedBox(height: 18),
-            LoadingButton(key: const Key('send-interest'), label: 'إرسال «مهتم»', loading: _busy, onPressed: _send),
-            const SizedBox(height: 6),
-            TextButton(onPressed: _busy ? null : () => Navigator.of(context).pop(), child: const Text('إلغاء')),
           ],
         ),
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // The error and its way out sit above «إرسال», always in view (QA A-L04: «إضافة بيانات وليّ الأمر»
+                  // was half hidden behind the send button at the end of the scrolling choices)
+                  if (_error != null) ...[
+                    InfoBanner(
+                      key: const Key('interest-error'),
+                      text: _error!,
+                      tone: BannerTone.danger,
+                      action: _errorAction(context),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  LoadingButton(key: const Key('send-interest'), label: 'إرسال «مهتم»', loading: _busy, onPressed: _send),
+                  const SizedBox(height: 4),
+                  TextButton(
+                    key: const Key('interest-cancel'),
+                    onPressed: _busy ? null : () => Navigator.of(context).pop(),
+                    child: const Text('إلغاء'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -210,12 +250,20 @@ class _InterestSheetState extends State<InterestSheet> {
           child: Text(_g('اشحن رصيدك', 'اشحني رصيدك')),
         );
       case 'GUARDIAN_REQUIRED':
-        return TextButton(
+        // A gold-outline action (design review P2): the way on, not a link lost in the error text
+        return OutlinedButton.icon(
+          key: const Key('interest-add-guardian'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: AppColors.goldText,
+            side: const BorderSide(color: AppColors.gold, width: 1.4),
+            minimumSize: const Size(0, 44),
+          ),
+          icon: const Icon(Icons.family_restroom_rounded, size: 18),
+          label: const Text('إضافة بيانات وليّ الأمر'),
           onPressed: () async {
             await context.push('/profile/guardian');
             if (mounted) setState(() => _error = null);
           },
-          child: const Text('إضافة بيانات وليّ الأمر'),
         );
       default:
         return null;
@@ -253,9 +301,9 @@ class _Option extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5)),
+                    Text(title, style: AppText.body.copyWith(fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
-                    Text(body, style: const TextStyle(color: AppColors.muted, fontSize: 13.5, height: 1.5)),
+                    Text(body, style: AppText.labelRegular.copyWith(color: AppColors.muted, height: 1.5)),
                   ],
                 ),
               ),

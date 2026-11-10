@@ -1,9 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:naseebak_app/core/push/push_service.dart' show foregroundNoticeId;
+import 'package:naseebak_app/core/routing/router.dart' show creditsRedirect;
 import 'package:naseebak_app/features/notifications/notifications_screen.dart';
 
 void main() {
+  test('a tagged foreground banner takes id 0, replacing FCM\'s tray notice of that chat (QA A2-L7)', () {
+    expect(foregroundNoticeId(tag: 'chat:c1', messageId: 'x'), 0);
+    expect(foregroundNoticeId(messageId: 'x'), 'x'.hashCode);
+  });
+
   group('notification links → app screens', () {
     // Every link shape the server sends (notify() urls, src/lib/notification-links.ts)
     const cases = {
@@ -16,6 +23,10 @@ void main() {
       '/dashboard/suggestions?tab=matches&match=m1': '/matches/m1',
       '/dashboard/suggestions?tab=matches': '/matches',
       '/dashboard/payments': '/credits',
+      // Pro has its own page (website /dashboard/pro, Pro notices since 2026-11-10)
+      '/dashboard/pro': '/pro',
+      '/dashboard/pro?pro=success': '/pro',
+      '/dashboard/payments?section=pro': '/pro',
       '/dashboard/support': '/support',
       '/dashboard/profile': '/profile',
       '/dashboard/profile/edit': '/profile/edit',
@@ -32,6 +43,11 @@ void main() {
       expect(appRouteForLink(url: '/dashboard', type: 'SYSTEM'), '/home');
       expect(appRouteForLink(url: '/blog/x'), '/home');
     });
+  });
+
+  test('/credits?section=pro (old links) opens the Pro screen; /credits stays', () {
+    expect(creditsRedirect(Uri.parse('/credits?section=pro')), '/pro');
+    expect(creditsRedirect(Uri.parse('/credits')), isNull);
   });
 
   group('openAppRoute', () {

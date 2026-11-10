@@ -34,8 +34,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>لتسجيل رسالة صوتية في المحادثة</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>لاختيار صورك لملفك الشخصي، ولا تظهر لأحد قبل التوافق المتبادل.</string>
+	<string>لاختيار صورك لملفك الشخصي ولإرسال الصور في المحادثة</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

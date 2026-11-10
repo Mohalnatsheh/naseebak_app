@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -8,7 +10,9 @@ import '../../core/localization/digits.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/json.dart';
 import '../../core/review/store_review.dart';
+import '../../core/push/push_permission.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/widgets/brand_kit.dart';
 import '../../shared/widgets/common.dart';
 import '../home/counts.dart';
 import '../home/gendered_copy.dart';
@@ -49,7 +53,10 @@ class _SuggestionsScreenState extends ConsumerState<SuggestionsScreen> with Sing
     ref.invalidate(suggestionsMetaProvider);
     ref.invalidate(countsProvider);
     try {
-      await ref.read(suggestionsMetaProvider.future);
+      final meta = await ref.read(suggestionsMetaProvider.future);
+      // The balance can change elsewhere (a refund, the website, admin): the cards' «مهتم» lock follows it
+      final credits = meta.credits;
+      if (credits != null && mounted) ref.read(authControllerProvider.notifier).updateCredits(credits);
     } catch (_) {
       // Shown by the screen (ErrorView with a retry)
     }
@@ -119,22 +126,29 @@ class _SuggestionsScreenState extends ConsumerState<SuggestionsScreen> with Sing
         ],
         bottom: TabBar(
           controller: _tabs,
+          // Tighter than the default 16: «مهتمون بك» with its count fits a 375 pt phone
+          labelPadding: const EdgeInsets.symmetric(horizontal: 6),
           tabs: [
             for (final t in FeedTab.values)
               Tab(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Flexible(child: Text(t.label, overflow: TextOverflow.ellipsis)),
-                    if ((badge(t) ?? 0) > 0) ...[const SizedBox(width: 6), CountBadge(count: badge(t)!)],
-                  ],
+                // Never cut to «مهتمون …»: a little smaller instead where it can't fit (small phone, large text)
+                child: FittedBox(
+                  key: Key('feed-tab-${t.name}'),
+                  fit: BoxFit.scaleDown,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(t.label, maxLines: 1),
+                      if ((badge(t) ?? 0) > 0) ...[const SizedBox(width: 4), CountBadge(count: badge(t)!)],
+                    ],
+                  ),
                 ),
               ),
           ],
         ),
       ),
       body: meta.when(
-        loading: () => const SkeletonList(count: 2, itemHeight: 260),
+        loading: () => const CardSkeletonList(),
         error: (e, _) => ErrorView(error: e, onRetry: _topUp),
         data: (m) => TabBarView(
           controller: _tabs,
@@ -311,11 +325,17 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
     final copy = matchDialogCopy(res, item.candidate.firstName, viewerFemale: _viewerFemale);
     // A happy moment: once the dialog closes, the store's rating sheet (once per install)
     final review = ref.read(storeReviewProvider);
+    // The match moment (S1): the gold seal draws itself around both initials, with a haptic
+    unawaited(HapticFeedback.heavyImpact());
+    final me = ref.read(authControllerProvider).me?.firstName ?? '';
+    String first(String n) => n.trim().isEmpty ? '' : n.trim().characters.first;
+    final initials = [first(me), first(item.candidate.firstName)].where((e) => e.isNotEmpty).join(' · ');
     showDialog<void>(
       context: context,
+      barrierLabel: 'إغلاق',
       builder: (ctx) => AlertDialog(
-        icon: const Icon(Icons.celebration_rounded, color: AppColors.gold, size: 40),
-        title: const Text('توافق متبادل!', textAlign: TextAlign.center),
+        icon: MatchSeal(initials: initials.isEmpty ? '✓' : initials, size: 104),
+        title: Text('توافق متبادل!', textAlign: TextAlign.center, style: AppText.title.copyWith(color: AppColors.navy)),
         content: Text(copy.body, textAlign: TextAlign.center),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('لاحقاً')),
@@ -330,7 +350,10 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
           ),
         ],
       ),
-    ).then((_) => review.afterFirstMatch());
+    ).then((_) {
+      // A chat opened: asked when that chat is left after a reply (chat room), never over it now
+      if (res.intro != 'CHAT') review.afterFirstMatch();
+    });
   }
 
 
@@ -373,6 +396,7 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
             chatAvailable: (counts?.flags.chat ?? false) && (me?.country.chatEnabled ?? true),
             creditOnInterest: counts?.flags.creditOnInterest ?? false,
             free: _freeReply(counts, item),
+            likedYou: item.likedYou,
             credits: me?.credits,
             canRecharge: ref.read(appPaymentsProvider),
             guardianConsented: counts?.guardianConsented ?? false,
@@ -434,9 +458,8 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
   }
 
   /// «مهتمون بك» at 0 credits with free_interest_reply on: the reply needs no credit
-  Widget _freeReplyBanner() => InfoBanner(
+  Widget _freeReplyBanner() => BannerLine(
         key: const Key('free-reply'),
-        tone: BannerTone.success,
         icon: Icons.favorite_outline,
         text: '${_g('شخص مهتم بك ينتظر ردّك.', 'شخص مهتم بكِ ينتظر ردّكِ.')} الرد بـ«مهتم» مجاني حتى برصيد صفر.',
       );
@@ -444,19 +467,14 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
   /// 0 credits: everything stays visible and «لا» is free; only «مهتم» waits for a recharge
   Widget _zeroBalance(BuildContext context) {
     final canRecharge = ref.watch(appPaymentsProvider);
-    return InfoBanner(
+    return BannerLine(
       key: const Key('zero-balance'),
-      tone: BannerTone.warning,
+      warning: true,
       icon: Icons.account_balance_wallet_outlined,
-      text: 'رصيدك صفر. ${_g('يمكنك تصفّح اقتراحاتك', 'يمكنكِ تصفّح اقتراحاتكِ')} والرد بـ«لا» مجاناً، '
-          '${canRecharge ? '${_g('واشحن رصيدك لتختار', 'واشحني رصيدكِ لتختاري')} «مهتم».' : 'و«مهتم» يحتاج رصيداً.'}',
-      action: canRecharge
-          ? TextButton(
-              key: const Key('recharge'),
-              onPressed: () => context.push('/credits'),
-              child: Text(_g('اشحن رصيدك', 'اشحني رصيدك')),
-            )
-          : null,
+      text: 'رصيدك صفر: «لا» مجاني، و«مهتم» ${canRecharge ? 'يحتاج شحن الرصيد.' : 'يحتاج رصيداً.'}',
+      actionKey: const Key('recharge'),
+      actionLabel: canRecharge ? _g('اشحن', 'اشحني') : null,
+      onAction: canRecharge ? () => context.push('/credits') : null,
     );
   }
 
@@ -465,7 +483,7 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
     super.build(context);
     final me = ref.watch(authControllerProvider).me;
     final counts = ref.watch(countsProvider).valueOrNull;
-    if (_loading && _items.isEmpty) return const SkeletonList(count: 2, itemHeight: 260);
+    if (_loading && _items.isEmpty) return const CardSkeletonList();
     if (_error != null && _items.isEmpty) return ErrorView(error: _error!, onRetry: _load);
     final onEdit = widget.onEditPreferences;
     final outOfCredits = _outOfCredits(counts, me?.credits);
@@ -477,7 +495,11 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
     final banner = widget.tab != FeedTab.waiting && outOfCredits && _items.isNotEmpty
         ? (freeTab ? _freeReplyBanner() : _zeroBalance(context))
         : null;
-    final headers = [?bar, ?banner];
+    // One banner slot (design P1-5): the credit line when it applies, else the notifications nudge on «جديدة»;
+    // the preferences bar is part of the page, under it
+    final slot = banner ??
+        (widget.tab == FeedTab.newTab && _items.isNotEmpty ? const PushOffCard(dismissible: true) : null);
+    final headers = [?slot, ?bar];
     final head = headers.length;
     return RefreshIndicator(
       onRefresh: _refresh,
@@ -540,6 +562,7 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
     switch (widget.tab) {
       case FeedTab.interested:
         return MessageView(
+          art: LineArtKind.envelope,
           icon: Icons.favorite_border_rounded,
           title: 'لا توجد اهتمامات جديدة حالياً',
           body: _g('استمر في استكشاف التوافقات، فقد تتعرّف إلى شخص يناسبك. من يبدي اهتمامه بك يظهر هنا.',
@@ -549,6 +572,7 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
         );
       case FeedTab.waiting:
         return MessageView(
+          art: LineArtKind.envelope,
           icon: Icons.hourglass_empty_rounded,
           title: _g('لم ترسل أي اهتمام بعد', 'لم ترسلي أي اهتمام بعد'),
           body: '${_g('ابدأ', 'ابدئي')} باكتشاف التوافقات الجديدة. عندما ${_g('تختار', 'تختارين')} «مهتم» على اقتراح، '
@@ -582,6 +606,7 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
           final forMe = (counts?.likedYou ?? 0) > 0;
           return MessageView(
             key: const Key('empty-pending'),
+            art: LineArtKind.dallah,
             icon: Icons.hourglass_top_rounded,
             title: forMe ? 'لديك اقتراحات بانتظار قرارك' : 'اقتراحاتك المفتوحة بانتظار الطرف الآخر',
             body: forMe
@@ -596,6 +621,7 @@ class _FeedListState extends ConsumerState<FeedList> with AutomaticKeepAliveClie
           );
         }
         return MessageView(
+          art: LineArtKind.dallah,
           icon: Icons.inbox_outlined,
           title: 'نبحث لك عن اقتراحات مناسبة',
           body: creditOnInterest

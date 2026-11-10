@@ -1,12 +1,14 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_theme.dart';
 import 'brand_visuals.dart';
 import 'welcome_state.dart';
+import '../../shared/widgets/alpha_fade.dart';
 
 class IntroPage {
   const IntroPage({required this.image, required this.kicker, required this.title, required this.body, required this.points});
@@ -93,7 +95,16 @@ class _IntroScreenState extends ConsumerState<IntroScreen> {
   Widget build(BuildContext context) {
     final index = _page.round().clamp(0, introPages.length - 1);
     final last = index == introPages.length - 1;
-    return Scaffold(
+    // Back on a later page goes to the page before (Android); on the first it leaves as usual
+    return PopScope(
+      canPop: index == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _pages.previousPage(duration: const Duration(milliseconds: 420), curve: Curves.easeOutCubic);
+      },
+      // Light status-bar icons over the navy pages (QA A-L02: they were dark on navy)
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
       backgroundColor: AppColors.navyDeep,
       body: NightBackdrop(
         child: SafeArea(
@@ -105,13 +116,14 @@ class _IntroScreenState extends ConsumerState<IntroScreen> {
                   Text('${index + 1} من ${introPages.length}',
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontWeight: FontWeight.w600)),
                   const Spacer(),
-                  AnimatedOpacity(
-                    opacity: last ? 0 : 1,
+                  TweenAnimationBuilder<double>(
+                    tween: Tween(end: last ? 0 : 1),
                     duration: const Duration(milliseconds: 250),
+                    builder: (_, t, child) => AlphaFade(opacity: t, child: child!),
                     child: TextButton(
                       key: const Key('intro-skip'),
                       onPressed: last ? null : _finish,
-                      child: const Text('تخطّي', style: TextStyle(color: Colors.white, fontSize: 15)),
+                      child: Text('تخطّي', style: AppText.body.copyWith(color: Colors.white)),
                     ),
                   ),
                 ]),
@@ -121,7 +133,7 @@ class _IntroScreenState extends ConsumerState<IntroScreen> {
                   key: const Key('intro-pages'),
                   controller: _pages,
                   itemCount: introPages.length,
-                  itemBuilder: (_, i) => _IntroSlide(page: introPages[i], delta: _page - i),
+                  itemBuilder: (_, i) => _IntroSlide(key: Key('intro-page-$i'), page: introPages[i], delta: _page - i),
                 ),
               ),
               Padding(
@@ -155,13 +167,15 @@ class _IntroScreenState extends ConsumerState<IntroScreen> {
           ),
         ),
       ),
+      ),
+      ),
     );
   }
 }
 
 /// One page: the photo in a gold-edged frame (parallax while swiping), then the words and two points.
 class _IntroSlide extends StatelessWidget {
-  const _IntroSlide({required this.page, required this.delta});
+  const _IntroSlide({super.key, required this.page, required this.delta});
   final IntroPage page;
 
   /// How far the pager is from this page (-1..1 while swiping)
@@ -197,12 +211,12 @@ class _IntroSlide extends StatelessWidget {
                     offset: Offset((rtl ? -d : d) * 60, 0),
                     child: Transform.scale(scale: 1.18, child: Image.asset(page.image, fit: BoxFit.cover)),
                   ),
-                  const DecoratedBox(
+                  DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [Colors.transparent, Color(0xAA15304A)],
+                        colors: [Colors.transparent, AppColors.navyDeep.withValues(alpha: 0.67)],
                         stops: [0.55, 1],
                       ),
                     ),
@@ -211,19 +225,19 @@ class _IntroSlide extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 26),
-            Opacity(
+            AlphaFade(
               opacity: visible,
               child: Transform.translate(
                 offset: Offset(0, d.abs() * 30),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(page.kicker, style: const TextStyle(color: AppColors.goldLight, fontWeight: FontWeight.w700, fontSize: 14)),
+                    Text(page.kicker, style: AppText.label.copyWith(color: AppColors.goldLight, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 6),
                     Text(page.title,
-                        style: const TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w800, height: 1.35)),
+                        style: AppText.title.copyWith(color: Colors.white, fontWeight: FontWeight.w800, height: 1.35)),
                     const SizedBox(height: 10),
-                    Text(page.body, style: TextStyle(color: Colors.white.withValues(alpha: 0.82), fontSize: 15.5, height: 1.7)),
+                    Text(page.body, style: AppText.body.copyWith(color: Colors.white.withValues(alpha: 0.82), height: 1.7)),
                     const SizedBox(height: 14),
                     for (final (icon, text) in page.points)
                       Padding(
@@ -235,7 +249,7 @@ class _IntroSlide extends StatelessWidget {
                             child: Icon(icon, size: 16, color: AppColors.goldLight),
                           ),
                           const SizedBox(width: 10),
-                          Expanded(child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 14.5))),
+                          Expanded(child: Text(text, style: AppText.labelRegular.copyWith(color: Colors.white))),
                         ]),
                       ),
                   ],
@@ -249,7 +263,7 @@ class _IntroSlide extends StatelessWidget {
   }
 }
 
-/// Round gold button with a ring that fills as the pages go by; on the last page it widens to «ابدأ الآن».
+/// Round gold button with a ring that fills as the pages go by; on the last page it widens to «لنبدأ».
 class _NextButton extends StatelessWidget {
   const _NextButton({required this.progress, required this.last, required this.onTap});
   final double progress;
@@ -290,7 +304,7 @@ class _NextButton extends StatelessWidget {
               height: 52,
               alignment: Alignment.center,
               child: last
-                  ? const Text('ابدأ الآن', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16))
+                  ? Text('لنبدأ', style: AppText.body.copyWith(color: Colors.white, fontWeight: FontWeight.w800))
                   : const Icon(Icons.arrow_forward_rounded, color: Colors.white),
             ),
           ),

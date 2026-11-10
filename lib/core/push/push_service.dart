@@ -81,8 +81,8 @@ class PushService with WidgetsBindingObserver {
     }
     try {
       await _initLocal();
-      // Android 13+ and iOS show the system prompt once; a refusal just means no pushes
-      await messaging.requestPermission();
+      // No system prompt here (it came bare over the first setup step): home asks once after setup, with a word on
+      // what the notices are for (`PushAskGate`); a member who already allowed gets pushes as before
       // No system banner while the app is open (on iOS either): `_showForeground` shows one, except for the screen
       // already open
       await messaging.setForegroundNotificationPresentationOptions(alert: false, badge: true, sound: false);
@@ -184,7 +184,7 @@ class PushService with WidgetsBindingObserver {
     if (url != null && _ref.read(routerProvider).state.uri.toString() == appRouteForLink(url: url)) return;
     final tag = n.android?.tag ?? m.collapseKey ?? m.threadId;
     _local.show(
-      id: (tag ?? m.messageId ?? '${n.title}${n.body}').hashCode,
+      id: foregroundNoticeId(tag: tag, messageId: m.messageId, title: n.title, body: n.body),
       title: n.title,
       body: n.body,
       payload: m.data['url'] as String?,
@@ -236,3 +236,8 @@ class PushService with WidgetsBindingObserver {
     router.routerDelegate.addListener(listener);
   }
 }
+
+/// Android tells notices apart by tag and id together, and FCM's own tray notice for a tagged push has id 0: a tagged
+/// banner uses id 0 too, so it replaces the tray notice of the same chat instead of showing beside it (QA A2-L7)
+int foregroundNoticeId({String? tag, String? messageId, String? title, String? body}) =>
+    tag != null ? 0 : (messageId ?? '$title$body').hashCode;

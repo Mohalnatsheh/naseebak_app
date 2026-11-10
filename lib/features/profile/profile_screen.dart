@@ -10,6 +10,7 @@ import '../../core/theme/app_theme.dart';
 import '../../shared/person.dart';
 import '../../shared/widgets/common.dart';
 import '../auth/phone_validation.dart';
+import 'profile_edit_screen.dart' show profileFieldLabels;
 import 'profile_repository.dart';
 
 /// Free-text fields the app lets a member fill or change. Filling an empty one saves at once; changing a
@@ -30,6 +31,8 @@ class ProfileScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final profile = ref.watch(myProfileProvider);
     final me = ref.watch(authControllerProvider).me;
+    // An edit waiting for review shows here too (not only on «تعديل ملفي»)
+    final pending = ref.watch(pendingEditProvider).valueOrNull;
     return Scaffold(
       appBar: AppBar(title: const Text('ملفي')),
       body: profile.when(
@@ -44,6 +47,7 @@ class ProfileScreen extends ConsumerWidget {
             ('الجنسية', v('nationality')),
             ('المدينة', [v('city'), v('area')].whereType<String>().join('، ')),
             ('التعليم', v('education')),
+            ('الوظيفة', v('job')),
             ('الحالة الاجتماعية', v('maritalStatus') == null ? null : OptionLabels.self('maritalStatus', v('maritalStatus')!, female: female)),
             ('التدين', v('religiosity') == null ? null : OptionLabels.self('religiosity', v('religiosity')!, female: female)),
             if (female) ('الحجاب', hijabLabel(asBool(p.field('hijab')), asBool(p.field('niqab')))),
@@ -51,10 +55,23 @@ class ProfileScreen extends ConsumerWidget {
                 p.field('prefAgeMin') == null ? null : '${asInt(p.field('prefAgeMin'))} – ${asInt(p.field('prefAgeMax'))}'),
           ];
           return RefreshIndicator(
-            onRefresh: () async => ref.invalidate(myProfileProvider),
+            onRefresh: () async {
+              ref.invalidate(myProfileProvider);
+              ref.invalidate(pendingEditProvider);
+            },
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (pending != null) ...[
+                  InfoBanner(
+                    key: const Key('profile-pending-review'),
+                    tone: BannerTone.warning,
+                    icon: Icons.hourglass_top_rounded,
+                    text: 'طلب تعديل قيد المراجعة: ${pending.fields.map((f) => profileFieldLabels[f] ?? f).join('، ')}. '
+                        'تظهر القيم الجديدة بعد الموافقة.',
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(18),
@@ -91,7 +108,7 @@ class ProfileScreen extends ConsumerWidget {
                               ]),
                             ),
                             const SizedBox(height: 4),
-                            const Text('اكتمال الملف', style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                            Text('اكتمال الملف', style: AppText.caption.copyWith(color: AppColors.muted)),
                           ],
                         ),
                       ],
@@ -106,8 +123,8 @@ class ProfileScreen extends ConsumerWidget {
                       for (final f in facts.where((f) => f.$2 != null && f.$2!.isNotEmpty))
                         ListTile(
                           dense: true,
-                          title: Text(f.$1, style: const TextStyle(color: AppColors.muted, fontSize: 13)),
-                          subtitle: Text(f.$2!, style: const TextStyle(fontSize: 15.5, color: AppColors.ink, fontWeight: FontWeight.w600)),
+                          title: Text(f.$1, style: AppText.labelRegular.copyWith(color: AppColors.muted)),
+                          subtitle: Text(f.$2!, style: AppText.body.copyWith(color: AppColors.ink, fontWeight: FontWeight.w600)),
                         ),
                     ],
                   ),
@@ -123,9 +140,9 @@ class ProfileScreen extends ConsumerWidget {
                   },
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'الحقول الفارغة تُحفظ فوراً، وتغيير بيانات محفوظة يُراجع من فريق نصيبك قبل اعتماده.',
-                  style: TextStyle(color: AppColors.muted, fontSize: 12.5),
+                  style: AppText.caption.copyWith(color: AppColors.muted),
                 ),
                 const SizedBox(height: 16),
                 const SectionTitle('عنّي'),
@@ -262,7 +279,7 @@ class _TextEditSheetState extends State<_TextEditSheet> {
             Text(widget.title, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 6),
             if (widget.initial.isNotEmpty)
-              const Text('تغيير قيمة محفوظة يُرسل للمراجعة قبل ظهوره.', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+              Text('تغيير قيمة محفوظة يُرسل للمراجعة قبل ظهوره.', style: AppText.labelRegular.copyWith(color: AppColors.muted)),
             const SizedBox(height: 12),
             TextField(controller: _c, maxLength: widget.maxLength, maxLines: widget.maxLength > 100 ? 5 : 1, autofocus: true),
             const SizedBox(height: 8),

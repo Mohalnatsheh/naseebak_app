@@ -147,7 +147,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         appBar: AppBar(),
         body: MessageView(
           icon: Icons.person_add_alt_1_outlined,
-          title: 'ابدأ بإدخال رقمك',
+          title: 'الخطوة الأولى: رقمك',
           actionLabel: 'رجوع',
           onAction: () => context.go('/auth/phone'),
         ),
@@ -162,12 +162,14 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         children: [
           const AuthHero(
             showBack: true,
-            title: 'عرّفنا بنفسك',
+            title: 'بياناتك الأساسية',
             subtitle: 'خطوة أخيرة لإنشاء حسابك. يظهر اسمك الأول فقط للطرف الآخر.',
           ),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(24, 4, 24, 32),
+              // Room above the first field: its floating label (raised with an error) sits half over the border and
+              // was clipped by the list's edge (QA A2-L10)
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
               children: [
                 TextField(
                   key: const Key('first-name'),
@@ -206,7 +208,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 if (_fieldErrors['gender'] != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
-                    child: Text(_fieldErrors['gender']!, style: const TextStyle(color: AppColors.danger, fontSize: 13)),
+                    child: Text(_fieldErrors['gender']!, style: AppText.labelRegular.copyWith(color: AppColors.danger)),
                   ),
                 const SizedBox(height: 20),
                 InkWell(
@@ -267,7 +269,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 if (_fieldErrors['terms'] != null)
                   Padding(
                     padding: const EdgeInsetsDirectional.only(start: 12, top: 4),
-                    child: Text(_fieldErrors['terms']!, style: const TextStyle(color: AppColors.danger, fontSize: 13)),
+                    child: Text(_fieldErrors['terms']!, style: AppText.labelRegular.copyWith(color: AppColors.danger)),
                   ),
                 if (_error != null) ...[const SizedBox(height: 14), InfoBanner(text: _error!, tone: BannerTone.danger)],
                 const SizedBox(height: 24),
@@ -305,8 +307,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             children: [
               Icon(icon, size: 30, color: selected ? AppColors.navy : AppColors.muted),
               const SizedBox(height: 6),
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-              Text(sub, style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+              Text(title, style: AppText.body.copyWith(fontWeight: FontWeight.w700)),
+              Text(sub, style: AppText.labelRegular.copyWith(color: AppColors.muted)),
             ],
           ),
         ),

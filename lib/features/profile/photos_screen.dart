@@ -8,7 +8,9 @@ import 'package:image_picker/image_picker.dart';
 import '../../app/providers.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/media_url.dart';
+import '../../core/storage/picker_files.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/widgets/brand_kit.dart';
 import '../../shared/widgets/common.dart';
 import 'profile_repository.dart';
 
@@ -51,7 +53,11 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     if (widget.picker != null) return widget.picker!();
     // Re-encoded smaller on the device, like the website's compressImage()
     final file = await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1600, maxHeight: 1600, imageQuality: 82);
-    return file?.readAsBytes();
+    if (file == null) return null;
+    final bytes = await file.readAsBytes();
+    // Read into memory: the picker's copy of the photo isn't left on the phone
+    deletePickedFile(file.path);
+    return bytes;
   }
 
   Future<void> _run(Future<void> Function() action, String done) async {
@@ -73,7 +79,7 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
     try {
       bytes = await _pick();
     } catch (_) {
-      if (mounted) showSnack(context, 'تعذّر فتح الصور. تحقق من إذن الوصول إلى الصور');
+      if (mounted) showSnack(context, 'تعذّر فتح الصور. يُرجى التحقق من إذن الوصول إلى الصور');
       return;
     }
     if (bytes == null || !mounted) return;
@@ -111,6 +117,10 @@ class _PhotosScreenState extends ConsumerState<PhotosScreen> {
               icon: Icons.lock_outline_rounded,
               text: 'صورك مخفية عن الجميع، ولا تظهر إلا بعد توافق متبادل. الصورة الرئيسية هي أول ما يُرى.',
             ),
+            if (list.isEmpty) ...[
+              const SizedBox(height: 12),
+              const Center(child: LineArt(LineArtKind.window)),
+            ],
             const SizedBox(height: 16),
             GridView.count(
               crossAxisCount: 2,
@@ -193,9 +203,15 @@ class _PhotoTile extends StatelessWidget {
               ),
             ),
           PositionedDirectional(
-            top: 4,
-            end: 4,
+            top: 0,
+            end: 0,
+            // A 48 pt target around the small white dot (QA A-L13: about 30 pt)
             child: PopupMenuButton<String>(
+              key: const Key('photo-menu'),
+              tooltip: 'خيارات الصورة',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 140),
+              style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
               enabled: !busy,
               icon: const CircleAvatar(radius: 16, backgroundColor: Colors.white, child: Icon(Icons.more_vert, size: 18, color: AppColors.navy)),
               onSelected: (v) => v == 'main' ? onMain() : onDelete(),

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/localization/digits.dart';
+import '../../core/localization/safe_input_formatter.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/json.dart';
 import '../../shared/person.dart';
@@ -14,6 +15,7 @@ import '../onboarding/setup_screen.dart' show dateOfBirthError;
 import 'profile_edit_plan.dart';
 import 'profile_repository.dart';
 import 'profile_screen.dart' show requiredPayload;
+import '../../core/theme/app_theme.dart';
 
 /// Arabic names of the profile fields (pending-request summary, errors)
 const profileFieldLabels = <String, String>{
@@ -91,6 +93,13 @@ const _relocate = {'yes': 'نعم', 'no': 'لا', 'maybe': 'ربما'};
 Map<String, Object?> editableValues(MyProfile p) => {
       for (final k in profileFieldLabels.keys) k: k == 'dateOfBirth' ? dayOf(p.field(k)) : p.field(k),
     };
+
+/// Jobs only women pick («ربة منزل»), like the website's `jobValuesFor`: not offered to a man (a value he already
+/// has still shows)
+const femaleOnlyJobs = {'ربة منزل'};
+
+List<String> jobOptionsFor(List<String> all, {required bool female, String? current}) =>
+    [for (final j in all) if (female || !femaleOnlyJobs.contains(j) || j == current) j];
 
 /// «تعديل ملفي»: every profile field of the website. Empty fields save at once; changing a stored value is sent to
 /// the Naseebak team for review (one request at a time, «سحب الطلب» to change it), like `/dashboard/profile/edit`.
@@ -276,7 +285,7 @@ class _ProfileEditFormState extends ConsumerState<ProfileEditForm> {
 
   Widget _label(String key, {String? text}) => Padding(
         padding: const EdgeInsets.only(top: 16, bottom: 8),
-        child: Text(text ?? profileFieldLabels[key]!, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+        child: Text(text ?? profileFieldLabels[key]!, style: AppText.body.copyWith(fontWeight: FontWeight.w700)),
       );
 
   void _pick(String key, String? value) {
@@ -376,6 +385,7 @@ class _ProfileEditFormState extends ConsumerState<ProfileEditForm> {
           maxLines: long ? 4 : 1,
           minLines: 1,
           keyboardType: number ? TextInputType.number : TextInputType.text,
+          inputFormatters: [LatinDigitsFormatter()],
           textDirection: number ? TextDirection.ltr : null,
           decoration: InputDecoration(hintText: hint),
         ),
@@ -413,7 +423,7 @@ class _ProfileEditFormState extends ConsumerState<ProfileEditForm> {
     final lists = widget.lists;
     final city = asString(_v['city']);
     final areas = city == null ? const <String>[] : (lists.areas[city] ?? const <String>[]);
-    final jobs = lists.option('job');
+    final jobs = jobOptionsFor(lists.option('job'), female: _female, current: asString(_v['job']));
     final dob = DateTime.tryParse(asString(_v['dateOfBirth']) ?? '');
     final pending = widget.pending;
     String self(String field, String v) => OptionLabels.self(field, v, female: _female);
@@ -442,7 +452,7 @@ class _ProfileEditFormState extends ConsumerState<ProfileEditForm> {
             key: const Key('field-dateOfBirth'),
             onPressed: _pickDate,
             icon: const Icon(Icons.calendar_month_outlined),
-            label: Text(dob == null ? 'اختر التاريخ' : formatDate(dob)),
+            label: Text(dob == null ? 'اختيار التاريخ' : formatDate(dob)),
           ),
           _choice('nationality', lists.nationalities(female: _female)),
           _choice('city', lists.cities),

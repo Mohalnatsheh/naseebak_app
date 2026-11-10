@@ -5,11 +5,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/localization/digits.dart';
+import '../../core/privacy/screen_privacy.dart';
 import '../../core/theme/app_theme.dart';
+import '../../shared/widgets/brand_kit.dart';
 import '../../shared/widgets/common.dart';
 import '../../core/auth/auth_controller.dart';
 import '../home/counts.dart';
 import '../home/gendered_copy.dart';
+import '../pro/pro_badge.dart';
 import 'chat_format.dart';
 import 'chat_models.dart';
 
@@ -106,7 +109,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
         title: const Text('المحادثات'),
         bottom: TabBar(controller: _tabs, tabs: [tab('النشطة', unread(active)), tab('المنتهية', unread(ended))]),
       ),
-      body: chats.when(
+      // The last messages show here: private like the chat itself, but only while this tab is the one on screen (the
+      // tab bar keeps it alive behind the others, with its tickers off)
+      body: SecureArea(onlyWhileShown: true, child: chats.when(
         loading: () => const SkeletonList(count: 4, itemHeight: 72),
         error: (e, _) => ErrorView(error: e, onRetry: () => ref.invalidate(chatListProvider)),
         data: (_) => TabBarView(
@@ -117,7 +122,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
               items: active,
               female: female,
               emptyTitle: 'لا توجد محادثات نشطة',
-              emptyBody: 'تُفتح المحادثة بعد التوافق المتبادل وقبول طلب المحادثة. نصية فقط، ولمدة محدودة.',
+              emptyBody: 'تُفتح المحادثة بعد التوافق المتبادل وقبول طلب المحادثة. مراقبة ولمدة محدودة.',
             ),
             _list(
               key: const PageStorageKey('chats-ended'),
@@ -128,7 +133,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
             ),
           ],
         ),
-      ),
+      )),
     );
   }
 
@@ -151,18 +156,23 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
               children: [
                 SizedBox(
                   height: 440,
-                  child: MessageView(icon: Icons.forum_outlined, title: emptyTitle, body: emptyBody),
+                  child: MessageView(art: LineArtKind.cupsTray, icon: Icons.forum_outlined, title: emptyTitle, body: emptyBody),
                 ),
               ],
             )
           : ListView.separated(
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              padding: const EdgeInsets.symmetric(vertical: 6),
               itemCount: items.length,
-              separatorBuilder: (_, _) => const Divider(indent: 76),
+              separatorBuilder: (_, _) => const Divider(height: 1, thickness: 0.6, indent: 84, endIndent: 16),
               itemBuilder: (context, i) => _tile(context, items[i], female),
             ),
     );
   }
+
+  Widget _name(ChatSummary c) => Text(c.partnerName,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(fontWeight: c.unread > 0 ? FontWeight.w800 : FontWeight.w600));
 
   Widget _tile(BuildContext context, ChatSummary c, bool female) {
     final status = switch (c.status) {
@@ -171,23 +181,36 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
       _ => c.blocked ? 'للقراءة فقط' : null,
     };
     final left = status == null && c.status == 'ACTIVE' ? chatTimeLeft(c.expiresAt) : null;
+    final ended = status != null;
     return ListTile(
       minVerticalPadding: 12,
-      leading: CircleAvatar(
-        radius: 24,
-        backgroundColor: AppColors.navy.withValues(alpha: 0.08),
-        child: Text(
-          c.partnerName.isEmpty ? '؟' : c.partnerName.characters.first,
-          style: const TextStyle(color: AppColors.navy, fontWeight: FontWeight.w700, fontSize: 19),
-        ),
+      contentPadding: const EdgeInsetsDirectional.fromSTEB(16, 0, 16, 0),
+      // The same avatar as the chat header (P2-5): the days left as a gold arc, grey once the chat is over
+      leading: MemberAvatar(
+        name: c.partnerName,
+        size: 52,
+        dimmed: ended,
+        pro: c.partnerIsPro,
+        timeLeft: ended || c.status != 'ACTIVE' ? null : chatTimeFraction(c.expiresAt),
       ),
       title: Row(
         children: [
           Expanded(
-            child: Text(c.partnerName, style: TextStyle(fontWeight: c.unread > 0 ? FontWeight.w800 : FontWeight.w600)),
+            // Aligned only around the badge row; a non-Pro name keeps the plain layout
+            child: c.partnerIsPro
+                ? Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: NameWithBadge(isPro: true, child: _name(c)),
+                  )
+                : _name(c),
           ),
           if (c.lastMessageAt != null)
-            Text(formatRelative(c.lastMessageAt!), style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+            Text(
+              formatRelative(c.lastMessageAt!),
+              style: AppText.caption.copyWith(
+                color: c.unread > 0 ? AppColors.navy : AppColors.muted,
+                fontWeight: c.unread > 0 ? FontWeight.w700 : null),
+            ),
         ],
       ),
       subtitle: Column(
@@ -199,7 +222,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
                 Icon(
                   c.lastRead ? Icons.done_all_rounded : Icons.done_rounded,
                   size: 16,
-                  color: c.lastRead ? AppColors.navy : AppColors.muted,
+                  color: c.lastRead ? AppColors.gold : AppColors.muted,
                   semanticLabel: c.lastRead ? 'مقروءة' : 'أُرسلت',
                 ),
                 const SizedBox(width: 4),
@@ -221,7 +244,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
               ),
               // Every ended chat carries its status label, with or without messages
               if (status != null) Pill(text: status, color: AppColors.muted),
-              if (c.unread > 0) ...[const SizedBox(width: 6), CountBadge(count: c.unread)],
+              // The same navy as my bubbles
+              if (c.unread > 0) ...[const SizedBox(width: 6), CountBadge(count: c.unread, color: AppColors.navy)],
             ],
           ),
           if (left != null)
@@ -229,11 +253,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> with WidgetsBindingOb
               padding: const EdgeInsets.only(top: 3),
               child: Text(
                 left.text,
-                style: TextStyle(
-                  fontSize: 12,
+                style: AppText.caption.copyWith(
                   color: left.urgent ? AppColors.warning : AppColors.muted,
-                  fontWeight: left.urgent ? FontWeight.w700 : null,
-                ),
+                  fontWeight: left.urgent ? FontWeight.w700 : null),
               ),
             ),
         ],

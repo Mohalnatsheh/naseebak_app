@@ -60,7 +60,15 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
     _focus.addListener(() => setState(() {}));
     _controller.addListener(() {
       final ok = validatePhone(_controller.text, widget.country) == null;
-      if (ok != _valid) setState(() => _valid = ok);
+      // An error from the last «متابعة» goes once the number is fixed (QA A2-L2: «رقم الهاتف مطلوب» stayed under a
+      // valid number)
+      final clear = ok && _fieldError != null;
+      if (ok != _valid || clear) {
+        setState(() {
+          _valid = ok;
+          if (clear) _fieldError = null;
+        });
+      }
     });
   }
   String? _fieldError;
@@ -127,10 +135,10 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         AuthHero(
-          title: register ? 'ابدأ رحلتك نحو نصيبك' : 'أهلاً بعودتك',
+          title: register ? 'رحلتك نحو نصيبك تبدأ هنا' : 'أهلاً بعودتك',
           subtitle: register
-              ? 'أنشئ حسابك برقم ${country.phoneWord}ك في دقيقة واحدة.'
-              : 'سجّل دخولك برقم ${country.phoneWord}ك لنكمل من حيث توقفت.',
+              ? 'يمكنك إنشاء حسابك برقم ${country.phoneWord}ك في دقيقة واحدة.'
+              : 'يمكنك الدخول برقم ${country.phoneWord}ك لنكمل من حيث توقفنا.',
           trailing: _CountryChip(country: country, onTap: _sending ? null : () => context.push('/country')),
         ),
         Expanded(
@@ -138,6 +146,7 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
             children: [
               FadeSlideIn(
+                key: const ValueKey('phone-in-1'),
                 delay: const Duration(milliseconds: 200),
                 child: _ModeSwitch(register: register, onChanged: _switchMode),
               ),
@@ -157,12 +166,14 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
                 const SizedBox(height: 16),
               ],
               FadeSlideIn(
+                key: const ValueKey('phone-in-2'),
                 delay: const Duration(milliseconds: 300),
                 child: Text('رقم ${country.phoneWord}',
-                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: AppColors.ink)),
+                    style: AppText.body.copyWith(fontWeight: FontWeight.w700, color: AppColors.ink)),
               ),
               const SizedBox(height: 10),
               FadeSlideIn(
+                key: const ValueKey('phone-in-3'),
                 delay: const Duration(milliseconds: 340),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 220),
@@ -189,10 +200,10 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          Text(country.flagEmoji, style: const TextStyle(fontSize: 20)),
+                          Text(country.flagEmoji, style: AppText.headline),
                           const SizedBox(width: 6),
                           Text(country.dialCode,
-                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.navy)),
+                              style: AppText.body.copyWith(fontWeight: FontWeight.w700, color: AppColors.navy)),
                         ]),
                       ),
                       Expanded(
@@ -204,7 +215,7 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
                           textInputAction: TextInputAction.done,
                           autofillHints: const [AutofillHints.telephoneNumberNational],
                           inputFormatters: [SafeInputFormatter(allowed: RegExp(r'[0-9٠-٩۰-۹+ ]'), maxLength: 16)],
-                          style: const TextStyle(fontSize: 20, letterSpacing: 1.5, fontWeight: FontWeight.w600),
+                          style: AppText.headline.copyWith(letterSpacing: 1.5, fontWeight: FontWeight.w600),
                           onSubmitted: (_) => _submit(),
                           decoration: InputDecoration(
                             hintText: country.phoneExample,
@@ -238,18 +249,19 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
                     ? const SizedBox(width: double.infinity)
                     : Padding(
                         padding: const EdgeInsets.only(top: 8),
-                        child: Text(_fieldError!, style: const TextStyle(color: AppColors.danger, fontSize: 13)),
+                        child: Text(_fieldError!, style: AppText.labelRegular.copyWith(color: AppColors.danger)),
                       ),
               ),
               const SizedBox(height: 8),
               FadeSlideIn(
+                key: const ValueKey('phone-in-4'),
                 delay: const Duration(milliseconds: 380),
                 child: Row(children: [
                   const Icon(Icons.sms_outlined, size: 16, color: AppColors.muted),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text('سنرسل رمز تحقق من 6 أرقام ${widget.country.code == 'SA' ? 'عبر واتساب' : 'برسالة نصية'}.',
-                        style: TextStyle(color: AppColors.muted.withValues(alpha: 0.9), fontSize: 13)),
+                        style: AppText.labelRegular.copyWith(color: AppColors.muted.withValues(alpha: 0.9))),
                   ),
                 ]),
               ),
@@ -259,16 +271,18 @@ class _PhoneFormState extends ConsumerState<PhoneForm> {
               ],
               const SizedBox(height: 24),
               FadeSlideIn(
+                key: const ValueKey('phone-in-5'),
                 delay: const Duration(milliseconds: 440),
                 child: _GoldButton(
                   key: const Key('send-otp'),
-                  label: register ? 'أنشئ حسابي' : 'إرسال رمز التحقق',
+                  label: register ? 'إنشاء الحساب' : 'إرسال رمز التحقق',
                   loading: _sending,
                   onPressed: _submit,
                 ),
               ),
               const SizedBox(height: 28),
               const FadeSlideIn(
+                key: ValueKey('phone-in-6'),
                 delay: Duration(milliseconds: 520),
                 child: Row(children: [
                   Expanded(child: _Promise(icon: Icons.verified_user_outlined, text: 'رقم مؤكَّد\nلكل حساب')),
@@ -324,12 +338,10 @@ class _ModeSwitch extends StatelessWidget {
                 child: Center(
                   child: AnimatedDefaultTextStyle(
                     duration: const Duration(milliseconds: 250),
-                    style: TextStyle(
+                    style: AppText.body.copyWith(
                       fontFamily: AppTheme.fontFamily,
-                      fontSize: 15,
                       fontWeight: FontWeight.w700,
-                      color: (value == OtpContext.register) == register ? AppColors.navy : AppColors.muted,
-                    ),
+                      color: (value == OtpContext.register) == register ? AppColors.navy : AppColors.muted),
                     child: Text(label),
                   ),
                 ),
@@ -353,7 +365,7 @@ class _GoldButton extends StatelessWidget {
     return Container(
       height: 58,
       decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [AppColors.navy, Color(0xFF2E6496)]),
+        gradient: const LinearGradient(colors: [AppColors.navy, AppColors.navy2]),
         borderRadius: BorderRadius.circular(18),
         boxShadow: [BoxShadow(color: AppColors.navy.withValues(alpha: 0.3), blurRadius: 18, offset: const Offset(0, 8))],
       ),
@@ -373,7 +385,7 @@ class _GoldButton extends StatelessWidget {
                       child: CircularProgressIndicator(strokeWidth: 2.6, color: Colors.white),
                     )
                   : Row(key: const ValueKey('label'), mainAxisSize: MainAxisSize.min, children: [
-                      Text(label, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w800)),
+                      Text(label, style: AppText.body.copyWith(color: Colors.white, fontWeight: FontWeight.w800)),
                       const SizedBox(width: 10),
                       Container(
                         padding: const EdgeInsets.all(4),
@@ -406,7 +418,7 @@ class _Promise extends StatelessWidget {
       child: Column(children: [
         Icon(icon, color: AppColors.gold, size: 22),
         const SizedBox(height: 6),
-        Text(text, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, height: 1.45, color: AppColors.ink)),
+        Text(text, textAlign: TextAlign.center, style: AppText.caption.copyWith(height: 1.45, color: AppColors.ink)),
       ]),
     );
   }
@@ -430,7 +442,7 @@ class _CountryChip extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Text(country.flagEmoji, style: const TextStyle(fontSize: 16)),
+            Text(country.flagEmoji, style: AppText.body),
             const SizedBox(width: 6),
             Text(country.nameAr, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
             const Icon(Icons.expand_more_rounded, color: Colors.white70, size: 18),

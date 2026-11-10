@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:firebase_analytics/firebase_analytics.dart';
@@ -16,11 +17,17 @@ import 'app/providers.dart';
 import 'core/analytics/analytics.dart';
 import 'core/analytics/crash_filter.dart';
 import 'core/push/push_service.dart';
+import 'core/routing/website_links.dart';
+import 'core/storage/picker_files.dart';
 import 'core/storage/token_store.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // A link delivered before the router exists is kept for it (core/routing/website_links.dart)
+  EarlyLinks.instance.start();
+  // Voice notes a killed run left in the temporary folder (nothing records or sends yet)
+  unawaited(sweepVoiceFilesAtStart());
   // Designed for phones held upright (also set in AndroidManifest / Info.plist)
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   await initializeDateFormatting('ar');

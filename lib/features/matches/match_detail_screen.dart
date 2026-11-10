@@ -14,11 +14,13 @@ import '../../shared/widgets/common.dart';
 import '../../shared/widgets/person_details_view.dart';
 import '../home/counts.dart';
 import '../home/gendered_copy.dart';
+import '../pro/pro_badge.dart';
+import '../profile/guardian_form.dart' show GuardianSaved;
 import 'match_models.dart';
 import 'matches_repository.dart';
 import 'safety_actions.dart';
 
-export 'safety_actions.dart' show ReportSheet;
+export 'safety_actions.dart' show ReportAnswer, ReportSheet;
 
 final _matchProvider = FutureProvider.autoDispose.family<MatchSummary?, String>(
   (ref, id) => ref.watch(matchesRepositoryProvider).find(id),
@@ -39,13 +41,57 @@ void refreshMatch(WidgetRef ref, String matchId) {
 
 /// One match: partner details, photos (revealed after the match), and the next step.
 /// The list's copy (`initial`) only shows while the match itself is fetched: the fetched one always wins.
-class MatchDetailScreen extends ConsumerWidget {
+class MatchDetailScreen extends ConsumerStatefulWidget {
   const MatchDetailScreen({super.key, required this.matchId, this.initial});
   final String matchId;
   final MatchSummary? initial;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<MatchDetailScreen> createState() => _MatchDetailScreenState();
+}
+
+/// What, in the counts, says something on a match may have moved (a request answered, a chat opened or ended)
+(int, int, int) matchSignals(Counts? c) => (c?.pendingIntros ?? 0, c?.actionableMatches ?? 0, c?.unreadChats ?? 0);
+
+/// Never stale (QA A-M04): the match re-reads on coming back to the app, on coming back from its chat (a report or a
+/// block there), and when the counts say something moved (the partner accepted, a notice arrived).
+class _MatchDetailScreenState extends ConsumerState<MatchDetailScreen> with WidgetsBindingObserver {
+  ProviderSubscription<(int, int, int)>? _signals;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _signals = ref.listenManual(countsProvider.select((c) => matchSignals(c.valueOrNull)), (prev, next) {
+      if (prev != null && prev != next) _reread();
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _signals?.close();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _reread();
+      ref.invalidate(countsProvider);
+    }
+  }
+
+  void _reread() {
+    if (!mounted) return;
+    ref.invalidate(introStateProvider(widget.matchId));
+    ref.invalidate(_matchProvider(widget.matchId));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final matchId = widget.matchId;
+    final initial = widget.initial;
     final match = ref.watch(_matchProvider(matchId));
     if (match.hasValue) {
       final m = match.value;
@@ -56,7 +102,7 @@ class MatchDetailScreen extends ConsumerWidget {
             )
           : _MatchView(match: m);
     }
-    if (initial != null) return _MatchView(match: initial!);
+    if (initial != null) return _MatchView(match: initial);
     return match.hasError
         ? Scaffold(
             appBar: AppBar(),
@@ -138,8 +184,11 @@ class _MatchView extends ConsumerWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(p.age != null ? '${p.firstName}، ${p.age} سنة' : p.firstName,
-                              style: Theme.of(context).textTheme.titleLarge),
+                          NameWithBadge(
+                            isPro: p.isPro,
+                            child: Text(p.age != null ? '${p.firstName}، ${p.age} سنة' : p.firstName,
+                                style: Theme.of(context).textTheme.titleLarge),
+                          ),
                           if (p.city != null) Text(p.city!, style: const TextStyle(color: AppColors.muted)),
                           const SizedBox(height: 8),
                           closed != null
@@ -296,6 +345,16 @@ class IntroPanel extends ConsumerStatefulWidget {
 }
 
 class _IntroPanelState extends ConsumerState<IntroPanel> {
+  /// Opens the chat; back here, the match re-reads (a report, a block or an end in the chat changed it)
+  Future<void> _openChat(String conversationId) async {
+    final container = ProviderScope.containerOf(context, listen: false);
+    await context.push('/chats/$conversationId');
+    container
+      ..invalidate(introStateProvider(widget.matchId))
+      ..invalidate(_matchProvider(widget.matchId))
+      ..invalidate(countsProvider);
+  }
+
   String? _busy;
 
   bool get _viewerFemale => ref.read(authControllerProvider).me?.isFemale ?? false;
@@ -325,6 +384,17 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
     } finally {
       if (mounted) setState(() => _busy = null);
     }
+  }
+
+  /// A family step needs a guardian: without one the form opens first (QA A2-M4: consent was asked, then the server
+  /// said the guardian was missing). Returns whether to go on, and whether the form already recorded the consent.
+  Future<({bool go, bool consented})> _guardianFirst(IntroState s) async {
+    if (s.guardianExists) return (go: true, consented: false);
+    final container = ProviderScope.containerOf(context, listen: false);
+    final saved = await context.push<GuardianSaved>('/profile/guardian');
+    container.invalidate(introStateProvider(widget.matchId));
+    if (saved == null || !mounted) return (go: false, consented: false);
+    return (go: true, consented: saved == GuardianSaved.consented);
   }
 
   Future<bool> _consent(String title) => confirmDialog(
@@ -381,6 +451,16 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
       data: (s) {
         final children = <Widget>[];
         void gap() => children.add(const SizedBox(height: 10));
+        // Moves the steps added since [from] into one sand card (nothing added: nothing shown)
+        void majlis(int from) {
+          if (children.length <= from) return;
+          final steps = children.sublist(from);
+          children.removeRange(from, children.length);
+          if (steps.isNotEmpty && steps.last is SizedBox) steps.removeLast();
+          children
+            ..add(MajlisCard(key: Key('majlis-$from'), children: steps))
+            ..add(const SizedBox(height: 10));
+        }
         final name = widget.partnerName;
 
         if (s.closed != null) {
@@ -404,12 +484,12 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
           children.add(LoadingButton(
             label: s.chatPaused ? 'المحادثة متوقفة مؤقتاً للمراجعة' : 'فتح المحادثة',
             icon: Icons.chat_bubble_outline_rounded,
-            onPressed: () => context.push('/chats/${s.conversationId}'),
+            onPressed: () => _openChat(s.conversationId!),
           ));
           if (s.chatExpiresAt != null) {
             gap();
             children.add(Text('تنتهي المحادثة في ${formatDate(s.chatExpiresAt!, withYear: false)}',
-                style: const TextStyle(color: AppColors.muted, fontSize: 13)));
+                style: AppText.labelRegular.copyWith(color: AppColors.muted)));
           }
           gap();
         } else if ((s.chatStatus == 'ended' || s.chatStatus == 'expired') && s.conversationId != null) {
@@ -417,12 +497,13 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
             label: s.chatPaused ? 'المحادثة متوقفة مؤقتاً للمراجعة' : 'عرض المحادثة السابقة',
             outlined: true,
             icon: Icons.history_rounded,
-            onPressed: () => context.push('/chats/${s.conversationId}'),
+            onPressed: () => _openChat(s.conversationId!),
           ));
           gap();
         }
 
-        // Family introduction
+        // Family introduction: its steps sit in a warm sand «مجلس» card with a gold line (design S3)
+        final familyFrom = children.length;
         switch (s.familyStatus) {
           case 'accepted':
             if (s.contacts != null) {
@@ -456,8 +537,10 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
               busy: _busy,
               keyPrefix: 'f',
               onAccept: () async {
+                final guardian = await _guardianFirst(s);
+                if (!guardian.go) return;
                 final needConsent = !s.guardianConsented;
-                if (needConsent && !await _consent('قبول التعارف العائلي')) return;
+                if (needConsent && !guardian.consented && !await _consent('قبول التعارف العائلي')) return;
                 await _run('f-yes', () => repo.respond(s.familyRequestId!, accept: true, consent: needConsent ? true : null).then((_) => _answered('FAMILY', true)),
                     success: 'تم قبول التعارف العائلي');
               },
@@ -488,7 +571,9 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
                 icon: Icons.family_restroom_rounded,
                 loading: _busy == 'family',
                 onPressed: () async {
-                  if (!await _consent('طلب تعارف عائلي')) return;
+                  final guardian = await _guardianFirst(s);
+                  if (!guardian.go) return;
+                  if (!guardian.consented && !await _consent('طلب تعارف عائلي')) return;
                   await _run('family', () => repo.sendIntro(widget.matchId, 'FAMILY', consent: true).then((_) => _requested('FAMILY')),
                       success: 'تم إرسال طلب التعارف العائلي');
                 },
@@ -499,12 +584,14 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
                   'انتهت مدة المحادثة. هل تنتقلان لتعارف عائلي؟${s.familyFree ? ' الانتقال مجاني' : ''}'
                   '${s.familyFree ? ' و' : ' '}متاح حتى ${formatDate(s.familyOpenUntil!, withYear: false)}.',
                   key: const Key('family-open-until'),
-                  style: const TextStyle(color: AppColors.muted, fontSize: 13),
+                  style: AppText.labelRegular.copyWith(color: AppColors.muted),
                 ));
               }
               gap();
             }
         }
+
+        majlis(familyFrom);
 
         // Chat requests
         switch (s.chatStatus) {
@@ -554,6 +641,7 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
             }
         }
 
+        final shareFrom = children.length;
         if (s.askShare) {
           children.add(InfoBanner(
             text: '${_p('اختار', 'اختارت')} $name التعارف العائلي. ${_g('شارك', 'شاركي')} بيانات وليّ أمرك '
@@ -564,7 +652,9 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
                   onPressed: _busy != null
                       ? null
                       : () async {
-                          if (!await _consent('مشاركة بيانات وليّ الأمر')) return;
+                          final guardian = await _guardianFirst(s);
+                          if (!guardian.go) return;
+                          if (!guardian.consented && !await _consent('مشاركة بيانات وليّ الأمر')) return;
                           await _run('share', () async => repo.shareGuardian(widget.matchId), success: 'تمت المشاركة');
                         },
                   child: const Text('مشاركة الآن'),
@@ -579,6 +669,7 @@ class _IntroPanelState extends ConsumerState<IntroPanel> {
           ));
           gap();
         }
+        majlis(shareFrom);
 
         if (s.followUpAsk && s.closed == null) {
           children.add(_FollowUp(
@@ -672,11 +763,11 @@ class _GuardianCard extends StatelessWidget {
         children: [
           const Text('بيانات التواصل العائلي', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.success)),
           const SizedBox(height: 8),
-          Text('${contact.name} (${contact.relationshipLabel})', style: const TextStyle(fontSize: 15.5)),
+          Text('${contact.name} (${contact.relationshipLabel})', style: AppText.body),
           const SizedBox(height: 4),
           Directionality(
             textDirection: TextDirection.ltr,
-            child: SelectableText(formatGuardianPhone(contact.phone, dialCode: (dialCode ?? '').isEmpty ? '962' : dialCode!), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+            child: SelectableText(formatGuardianPhone(contact.phone, dialCode: (dialCode ?? '').isEmpty ? '962' : dialCode!), style: AppText.body.copyWith(fontWeight: FontWeight.w700)),
           ),
         ],
       ),
@@ -700,9 +791,9 @@ class _FollowUp extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('كيف يسير التعارف العائلي؟', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5)),
+            Text('كيف يسير التعارف العائلي؟', style: AppText.body.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            Text(text, style: const TextStyle(color: AppColors.muted, fontSize: 13.5, height: 1.5)),
+            Text(text, style: AppText.labelRegular.copyWith(color: AppColors.muted, height: 1.5)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -721,4 +812,24 @@ class _FollowUp extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The «مجلس» room (design S3): warm sand with a gold line at the start edge, for the family introduction steps and
+/// guardian consent, as in the chat
+class MajlisCard extends StatelessWidget {
+  const MajlisCard({super.key, required this.children});
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: Container(
+          padding: const EdgeInsets.all(AppSpace.md),
+          decoration: const BoxDecoration(
+            color: AppColors.sand,
+            border: BorderDirectional(start: BorderSide(color: AppColors.gold, width: 3)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+        ),
+      );
 }

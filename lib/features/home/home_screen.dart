@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/auth/auth_controller.dart';
+import '../../core/localization/arabic_count.dart';
 import '../../core/push/push_permission.dart';
 import '../../core/theme/app_theme.dart';
 import '../../shared/widgets/common.dart';
@@ -14,6 +16,7 @@ import 'gendered_copy.dart';
 import 'poll_card.dart';
 import 'profile_strength_card.dart';
 import '../notifications/notifications_screen.dart';
+import '../pro/pro_badge.dart';
 
 /// One suggested next step, from the counts.
 class NextStep {
@@ -41,7 +44,9 @@ NextStep nextStepFor(Counts? c, {bool viewerFemale = false}) {
         '/suggestions?tab=interested', Icons.favorite_rounded);
   }
   if (c != null && c.unreadChats > 0) {
-    return NextStep('رسائل جديدة', 'لديك ${c.unreadChats} رسائل غير مقروءة.', 'فتح المحادثات', '/chats',
+    // Counts chats with something unread, not messages (QA A2-L3: «لديك 1 رسائل»)
+    final chats = arabicCount(c.unreadChats, one: 'محادثة واحدة', two: 'محادثتين', few: 'محادثات', many: 'محادثة');
+    return NextStep('رسائل جديدة', 'لديك رسائل جديدة في $chats.', 'فتح المحادثات', '/chats',
         Icons.chat_bubble_rounded);
   }
   if (c != null && c.actionableMatches > 0) {
@@ -66,9 +71,27 @@ String greetingFor(DateTime now, String? name) {
 /// The first new suggestions, shown on home (without the top-up the suggestions screen runs). Reloads with the counts,
 /// so a decision taken on the suggestions tab (which refreshes them) is reflected here too.
 final homeSuggestionsProvider = FutureProvider<List<FeedItem>>((ref) async {
-  await ref.watch(countsProvider.future);
+  final counts = await ref.watch(countsProvider.future);
   final page = await ref.watch(suggestionsRepositoryProvider).feed(FeedTab.newTab);
+  // Right after setup the counts are read before the feed creates the first cards: «اقتراحات جديدة 0» and no tab
+  // badge over a list of cards (QA A-L01). Then the counts are read again, once per member.
+  if (page.items.isNotEmpty && (counts.newSuggestions ?? 0) == 0) {
+    final once = ref.read(_homeCountsResync);
+    if (!once.done) {
+      once.done = true;
+      Future.microtask(() => ref.invalidate(countsProvider));
+    }
+  }
   return page.items.take(8).toList();
+});
+
+class _Once {
+  bool done = false;
+}
+
+final _homeCountsResync = Provider<_Once>((ref) {
+  ref.watch(currentMemberIdProvider);
+  return _Once();
 });
 
 class HomeScreen extends ConsumerWidget {
@@ -92,12 +115,17 @@ class HomeScreen extends ConsumerWidget {
     final credits = c?.credits ?? me?.credits;
     String count(int? n) => counts.isLoading && c == null ? '…' : '${n ?? 0}';
     return Scaffold(
-      body: RefreshIndicator(
+      // Status bar: dark icons over the page, light ones over the navy header while it is under them
+      body: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle.dark,
+        child: RefreshIndicator(
         onRefresh: () => _refresh(ref),
         child: ListView(
           padding: EdgeInsets.zero,
           children: [
-            Container(
+            AnnotatedRegion<SystemUiOverlayStyle>(
+              value: SystemUiOverlayStyle.light,
+              child: Container(
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
@@ -115,27 +143,35 @@ class HomeScreen extends ConsumerWidget {
                       const BrandLogo(height: 30, onDark: true),
                       const Spacer(),
                       if (credits != null) _CreditsPill(credits: credits),
-                      Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          IconButton(
-                            key: const Key('open-notifications'),
-                            tooltip: 'الإشعارات',
-                            onPressed: () async {
-                              await context.push('/notifications');
-                              ref.invalidate(unreadNotificationsProvider);
-                            },
-                            icon: const Icon(Icons.notifications_none_rounded, color: Colors.white),
+                      // The count sits on the bell's corner and never grows over it (QA A2-L3)
+                      IconButton(
+                        key: const Key('open-notifications'),
+                        tooltip: unread > 0 ? 'الإشعارات، $unread غير مقروءة' : 'الإشعارات',
+                        onPressed: () async {
+                          await context.push('/notifications');
+                          ref.invalidate(unreadNotificationsProvider);
+                        },
+                        icon: MediaQuery.withNoTextScaling(
+                          child: Badge(
+                            key: const Key('bell-badge'),
+                            isLabelVisible: unread > 0,
+                            backgroundColor: AppColors.gold,
+                            textColor: AppColors.navyDeep,
+                            label: Text(unread > 99 ? '99+' : '$unread'),
+                            child: const Icon(Icons.notifications_none_rounded, color: Colors.white),
                           ),
-                          if (unread > 0) PositionedDirectional(top: 4, end: 2, child: CountBadge(count: unread)),
-                        ],
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 18),
-                  Text(
-                    greetingFor(DateTime.now(), me?.firstName),
-                    style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w700),
+                  NameWithBadge(
+                    isPro: c?.isPro ?? false,
+                    onDark: true,
+                    child: Text(
+                      greetingFor(DateTime.now(), me?.firstName),
+                      style: AppText.title.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   Container(
@@ -154,7 +190,7 @@ class HomeScreen extends ConsumerWidget {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(step.title,
-                                  style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700)),
+                                  style: AppText.body.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
                             ),
                           ],
                         ),
@@ -172,13 +208,15 @@ class HomeScreen extends ConsumerWidget {
                   ),
                 ],
               ),
-            ),
+            )),
             Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const PushOffCard(dismissible: true, padding: EdgeInsets.only(bottom: 12)),
+                  const PushAskGate(),
+                  // One banner slot (design P1-5): only the most urgent line shows
+                  _BannerSlot(counts: c, female: female),
                   if (counts.hasError && c == null) ...[
                     InfoBanner(
                       text: 'تعذّر تحميل آخر المستجدات.',
@@ -187,7 +225,8 @@ class HomeScreen extends ConsumerWidget {
                     ),
                     const SizedBox(height: 12),
                   ],
-                  Row(
+                  IntrinsicHeight(child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Expanded(
                         child: _StatusChip(
@@ -221,7 +260,7 @@ class HomeScreen extends ConsumerWidget {
                         ),
                       ),
                     ],
-                  ),
+                  )),
                   const SizedBox(height: 20),
                   SectionTitle(
                     'اقتراحات اليوم',
@@ -243,7 +282,7 @@ class HomeScreen extends ConsumerWidget {
             ),
           ],
         ),
-      ),
+      )),
     );
   }
 }
@@ -322,11 +361,13 @@ class _StatusChip extends StatelessWidget {
                 child: Icon(icon, color: AppColors.gold, size: 20),
               ),
               const SizedBox(height: 8),
-              Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.navy)),
+              Text(value, style: AppText.title.copyWith(fontWeight: FontWeight.w800, color: AppColors.navy)),
+              // Two lines at large text: «توافقات تنتظرك» is never cut to «توافقات تنتظ…» (QA A-L14)
               Text(label,
-                  maxLines: 1,
+                  maxLines: 2,
+                  textAlign: TextAlign.center,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: AppColors.muted, fontSize: 12.5)),
+                  style: AppText.caption.copyWith(color: AppColors.muted)),
             ],
           ),
         ),
@@ -357,8 +398,20 @@ class _SuggestionsStrip extends ConsumerWidget {
           ),
         ),
       ),
-      // The chips above already lead to the suggestions; no second error here
-      error: (_, _) => const SizedBox.shrink(),
+      // Never an empty space under the heading: a short line with a retry
+      error: (_, _) => Card(
+        margin: EdgeInsets.zero,
+        child: ListTile(
+          key: const Key('home-suggestions-error'),
+          minVerticalPadding: 14,
+          leading: const Icon(Icons.wifi_off_rounded, color: AppColors.muted),
+          title: const Text('تعذّر تحميل الاقتراحات'),
+          trailing: TextButton(
+            onPressed: () => ref.invalidate(homeSuggestionsProvider),
+            child: const Text('إعادة المحاولة'),
+          ),
+        ),
+      ),
       data: (list) => list.isEmpty
           ? Card(
               margin: EdgeInsets.zero,
@@ -386,13 +439,17 @@ class _SuggestionsStrip extends ConsumerWidget {
   }
 }
 
-class _SuggestionPreview extends StatelessWidget {
+class _SuggestionPreview extends ConsumerWidget {
   const _SuggestionPreview({required this.item});
   final FeedItem item;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final p = item.candidate;
+    // The verified mark is hidden while intro requests are on (newer members never look second-class), and while
+    // the switches aren't known yet
+    final introRequests = ref.watch(countsProvider.select((c) => c.valueOrNull?.flags.introRequests));
+    final showVerified = p.isVerified && introRequests == false;
     return SizedBox(
       width: 150,
       child: Card(
@@ -417,10 +474,11 @@ class _SuggestionPreview extends StatelessWidget {
                             decoration:
                                 BoxDecoration(color: AppColors.gold.withValues(alpha: 0.15), shape: BoxShape.circle),
                             child: Text(p.firstName.isEmpty ? '؟' : p.firstName.characters.first,
-                                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.navy)),
+                                style: AppText.title.copyWith(fontWeight: FontWeight.w700, color: AppColors.navy)),
                           ),
-                    if (p.isVerified)
+                    if (showVerified)
                       const PositionedDirectional(
+                        key: Key('home-verified'),
                         bottom: -2,
                         end: -2,
                         child: Icon(Icons.verified_rounded, size: 20, color: AppColors.success),
@@ -432,23 +490,59 @@ class _SuggestionPreview extends StatelessWidget {
                   p.age != null ? '${p.firstName}، ${p.age}' : p.firstName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                  style: AppText.body.copyWith(fontWeight: FontWeight.w800),
                 ),
                 if (p.city != null)
                   Text(p.city!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: AppColors.muted, fontSize: 12.5)),
+                      style: AppText.caption.copyWith(color: AppColors.muted)),
                 const Spacer(),
                 if (item.likedYou)
                   const Pill(text: 'مهتم بك', color: AppColors.success, icon: Icons.favorite_rounded)
                 else
-                  Text('عرض الملف', style: TextStyle(color: AppColors.navy.withValues(alpha: 0.8), fontSize: 12.5)),
+                  Text('عرض الملف', style: AppText.caption.copyWith(color: AppColors.navy.withValues(alpha: 0.8))),
               ],
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+/// What the home's one banner slot shows, most urgent first (design P1-5): 0 credits while someone's «مهتم» waits
+/// (and a reply costs a credit), else notifications off. A family request waiting is the hero's next step already.
+enum HomeBanner { noCreditsWithInterest, pushOff }
+
+HomeBanner homeBannerFor(Counts? c) {
+  final waiting = (c?.likedYou ?? 0) > 0;
+  final broke = c?.credits == 0 && (c?.flags.creditOnInterest ?? false) && !(c?.flags.freeInterestReply ?? false);
+  return waiting && broke ? HomeBanner.noCreditsWithInterest : HomeBanner.pushOff;
+}
+
+class _BannerSlot extends ConsumerWidget {
+  const _BannerSlot({required this.counts, required this.female});
+  final Counts? counts;
+  final bool female;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    switch (homeBannerFor(counts)) {
+      case HomeBanner.noCreditsWithInterest:
+        final payments = ref.watch(appPaymentsProvider);
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: BannerLine(
+            key: const Key('home-banner-credits'),
+            icon: Icons.favorite_rounded,
+            text: forViewer(female, 'رصيدك صفر وهناك من ينتظر ردك.', 'رصيدكِ صفر وهناك من ينتظر ردكِ.'),
+            actionLabel: payments ? forViewer(female, 'اشحن', 'اشحني') : null,
+            onAction: payments ? () => context.push('/credits') : null,
+          ),
+        );
+      case HomeBanner.pushOff:
+        return const PushOffCard(dismissible: true, padding: EdgeInsets.only(bottom: 12));
+    }
   }
 }

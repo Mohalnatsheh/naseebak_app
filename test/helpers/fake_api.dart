@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:naseebak_app/app/providers.dart';
+import 'package:naseebak_app/core/auth/auth_controller.dart';
 import 'package:naseebak_app/core/network/api_client.dart';
 import 'package:naseebak_app/core/storage/token_store.dart';
 import 'package:naseebak_app/core/theme/app_theme.dart';
@@ -144,3 +145,25 @@ Widget rtlApp(Widget child) => MaterialApp(
       ],
       home: child,
     );
+
+/// Same, around a router (screens that push routes)
+Widget rtlRouterApp(RouterConfig<Object> router) => MaterialApp.router(
+      theme: AppTheme.light(),
+      locale: const Locale('ar'),
+      supportedLocales: const [Locale('ar')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      routerConfig: router,
+    );
+
+/// Reads the session and waits (real time: call inside `tester.runAsync`) until it is known
+Future<AuthState> settled(ProviderContainer c) async {
+  c.read(authControllerProvider);
+  for (var i = 0; i < 50 && c.read(authControllerProvider).status == AuthStatus.unknown; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  return c.read(authControllerProvider);
+}
