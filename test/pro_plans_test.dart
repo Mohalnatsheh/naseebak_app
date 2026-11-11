@@ -184,6 +184,7 @@ void main() {
     expect(find.textContaining('تدفعين'), findsOneWidget);
     expect(find.textContaining('5.64\$'), findsOneWidget);
     expect(find.text('إرسال الصور في المحادثة'), findsOneWidget);
+    expect(find.text('أولوية في الاقتراحات'), findsOneWidget);
     // Weekly sits on the right in RTL
     final weekly = tester.getCenter(find.text('أسبوعي')).dx;
     final yearly = tester.getCenter(find.text('سنوي')).dx;
@@ -217,6 +218,23 @@ void main() {
       // `/api/pro` isn't even read
       expect(pro.adapter.to('GET', '/api/pro'), isEmpty);
     }
+  });
+
+  testWidgets('the plans card lists «حذف الرسائل ومسح المحادثة» only while the server says chatDelete', (tester) async {
+    final o = _offers.map(ProOffer.fromJson).toList();
+    Widget card({required bool chatDelete}) => rtlApp(Scaffold(
+          body: SingleChildScrollView(
+            child: ProPlansCard(
+                offers: o, canBuy: true, chatDelete: chatDelete, female: false, busy: false, onSubscribe: (_) {}),
+          ),
+        ));
+    await tester.pumpWidget(card(chatDelete: true));
+    expect(find.text(proChatDeleteLabel), findsOneWidget);
+    await tester.pumpWidget(card(chatDelete: false));
+    expect(find.text(proChatDeleteLabel), findsNothing);
+    // An older server sends no chatDelete: the line stays hidden
+    expect(MyProState.fromJson(const {}).chatDelete, isFalse);
+    expect(MyProState.fromJson(const {'chatDelete': true}).chatDelete, isTrue);
   });
 
   testWidgets('a picked plan that a reload no longer offers falls back to the default, not a stale choice',
@@ -324,13 +342,42 @@ void main() {
     expect(pro.adapter.to('GET', '/api/pro').length, after);
   });
 
-  testWidgets('back from the browser before the webhook: a neutral line after 10 s, no error', (tester) async {
+  testWidgets('back from a cancelled checkout: polling stops, a plain line, never «سيتم تفعيل…»', (tester) async {
+    final pro = FakePro();
+    await _pump(tester, pro);
+    await _subscribe(tester);
+    _returnToApp(tester);
+    ProviderScope.containerOf(tester.element(find.byType(ProScreen))).read(proReturnProvider.notifier).state =
+        ProReturn.cancel;
+    await _advance(tester, const Duration(seconds: 1));
+    expect(find.text(proCheckoutCancelledText), findsOneWidget);
+    final after = pro.adapter.to('GET', '/api/pro').length;
+    await _advance(tester, const Duration(seconds: 12));
+    expect(pro.adapter.to('GET', '/api/pro').length, after);
+    expect(find.text(proActivatingText), findsNothing);
+    expect(find.byType(ProPlansCard), findsOneWidget);
+  });
+
+  testWidgets('back from the browser with no return link (left the page): nothing is promised', (tester) async {
     final pro = FakePro();
     await _pump(tester, pro);
     await _subscribe(tester);
     _returnToApp(tester);
     await _advance(tester, const Duration(seconds: 12));
-    expect(find.text('سيتم تفعيل العضوية خلال لحظات'), findsOneWidget);
+    expect(find.text(proActivatingText), findsNothing);
+    expect(find.text(proCheckoutCancelledText), findsNothing);
+  });
+
+  testWidgets('back from the browser before the webhook: a neutral line after 10 s, no error', (tester) async {
+    final pro = FakePro();
+    await _pump(tester, pro);
+    await _subscribe(tester);
+    // Stripe's return link says it was paid (the router writes it)
+    ProviderScope.containerOf(tester.element(find.byType(ProScreen))).read(proReturnProvider.notifier).state =
+        ProReturn.success;
+    _returnToApp(tester);
+    await _advance(tester, const Duration(seconds: 12));
+    expect(find.text(proActivatingText), findsOneWidget);
     expect(find.text('تعذّر التحميل'), findsNothing);
     // A later resume without a new checkout re-reads once, no polling
     final after = pro.adapter.to('GET', '/api/pro').length;
@@ -590,6 +637,20 @@ void main() {
     expect(proFootnote(none), contains('يتجدد الاشتراك تلقائياً'));
   });
 
+  test('the pitch reads as one sentence, the free credits only when a plan has some', () {
+    final withCredits = MyProState.fromJson({'enabled': true, 'canBuy': true, 'offers': _offers}).offers;
+    final none = MyProState.fromJson({
+      'enabled': true,
+      'canBuy': true,
+      'offers': [for (final o in _offers) {...o, 'credits': 0}],
+    }).offers;
+    expect(proPitch(none), 'مع Pro يمكنك إرسال الصور والرسائل الصوتية في المحادثة، ولك أولوية في الاقتراحات.');
+    expect(
+      proPitch(withCredits),
+      'مع Pro يمكنك إرسال الصور والرسائل الصوتية في المحادثة، ولك أولوية في الاقتراحات، ويصلك رصيد مجاني مع الاشتراك.',
+    );
+  });
+
   testWidgets('a failed cancel (subscription already gone, 404) reloads «اشتراكي»', (tester) async {
     final pro = FakePro()..isPro = true;
     pro.adapter.handlers['POST /api/pro/cancel'] = (_) {
@@ -607,5 +668,36 @@ void main() {
     expect(find.text('لا يوجد اشتراك'), findsOneWidget);
     expect(pro.adapter.to('GET', '/api/pro').length, greaterThan(before));
     expect(find.byType(MyProCard), findsNothing);
+  });
+
+  group('«اشتراكي» credits line', () {
+    final offer = {'id': 'monthly', 'price': 4, 'currency': 'JOD', 'chargeCurrency': 'usd', 'chargeAmount': 564, 'credits': 20, 'interval': 'month'};
+
+    test("the subscription's own credits win over today's offer, with the next grant's date", () {
+      final s = MyProState.fromJson({
+        'isPro': true,
+        'plan': 'monthly',
+        'creditsPerGrant': 8,
+        'nextGrantAt': '2026-12-10T10:00:00.000Z',
+        'offers': [offer],
+      });
+      expect(s.creditsPerGrant, 8);
+      final line = myProCreditsLine(s)!;
+      expect(line, startsWith('8 أرصدة كل شهر · الدفعة القادمة في '));
+      expect(line, isNot(contains('20')));
+    });
+
+    test('no next grant (cancelled): the credits alone; weekly says كل أسبوع; none: no line', () {
+      expect(myProCreditsLine(MyProState.fromJson({'isPro': true, 'plan': 'weekly', 'creditsPerGrant': 5, 'offers': []})),
+          '5 أرصدة كل أسبوع');
+      expect(myProCreditsLine(MyProState.fromJson({'isPro': true, 'plan': 'monthly', 'creditsPerGrant': 0, 'offers': [offer]})),
+          isNull);
+    });
+
+    test("a server before the field: the plan's offer of today", () {
+      final s = MyProState.fromJson({'isPro': true, 'plan': 'monthly', 'offers': [offer]});
+      expect(s.creditsPerGrant, isNull);
+      expect(myProCreditsLine(s), '20 رصيداً مجاناً كل شهر');
+    });
   });
 }

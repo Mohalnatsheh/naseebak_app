@@ -50,6 +50,8 @@ class ProfileScreen extends ConsumerWidget {
             ('الوظيفة', v('job')),
             ('الحالة الاجتماعية', v('maritalStatus') == null ? null : OptionLabels.self('maritalStatus', v('maritalStatus')!, female: female)),
             ('التدين', v('religiosity') == null ? null : OptionLabels.self('religiosity', v('religiosity')!, female: female)),
+            // Lebanon only; my own «أفضّل عدم الذكر» shows here (never to others)
+            ('المذهب', v('sect') == null ? null : OptionLabels.self('sect', v('sect')!, female: female)),
             if (female) ('الحجاب', hijabLabel(asBool(p.field('hijab')), asBool(p.field('niqab')))),
             ('العمر المناسب للشريك',
                 p.field('prefAgeMin') == null ? null : '${asInt(p.field('prefAgeMin'))} – ${asInt(p.field('prefAgeMax'))}'),
@@ -211,6 +213,8 @@ class ProfileScreen extends ConsumerWidget {
     );
     if (value == null || value.trim() == current.trim() || !context.mounted) return;
     final repo = ref.read(profileRepositoryProvider);
+    // Taken before the request: the profile still reloads if the page was left meanwhile
+    final container = ProviderScope.containerOf(context, listen: false);
     try {
       if (current.isEmpty) {
         try {
@@ -225,7 +229,7 @@ class ProfileScreen extends ConsumerWidget {
         final msg = await repo.requestUpdate({field.$1: value.trim()});
         if (context.mounted) showSnack(context, msg ?? 'أُرسل التعديل للمراجعة وسيظهر بعد اعتماده');
       }
-      ref.invalidate(myProfileProvider);
+      container.invalidate(myProfileProvider);
     } on ApiException catch (e) {
       if (context.mounted) showSnack(context, e.message);
     }
@@ -242,6 +246,7 @@ Map<String, dynamic> requiredPayload(MyProfile p) {
     'education': p.field('education'),
     'maritalStatus': p.field('maritalStatus'),
     'religiosity': p.field('religiosity'),
+    'sect': p.field('sect'),
     'childrenCount': asInt(p.field('childrenCount')) ?? 0,
     'prefAgeMin': asInt(p.field('prefAgeMin')),
     'prefAgeMax': asInt(p.field('prefAgeMax')),
@@ -272,7 +277,8 @@ class _TextEditSheetState extends State<_TextEditSheet> {
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        // «حفظ» stays clear of the home indicator (0 while the keyboard is up)
+        padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + MediaQuery.paddingOf(context).bottom),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [

@@ -79,6 +79,15 @@ String reportDoneText({required bool report, required bool end, required bool op
   return open ? 'تم إنهاء المحادثة والإبلاغ' : 'تم الإبلاغ والحظر';
 }
 
+/// The cursor for «older messages»: the oldest message held that the server saved (never a failed or sending bubble
+/// of mine); null when none is
+ChatMessage? olderCursorOf(List<ChatMessage> oldestFirst) {
+  for (final m in oldestFirst) {
+    if (m.state == SendState.sent) return m;
+  }
+  return null;
+}
+
 class ChatRoomScreen extends ConsumerStatefulWidget {
   const ChatRoomScreen({super.key, required this.chatId, this.pollInterval = const Duration(seconds: 4)});
   final String chatId;
@@ -87,6 +96,9 @@ class ChatRoomScreen extends ConsumerStatefulWidget {
   @override
   ConsumerState<ChatRoomScreen> createState() => _ChatRoomScreenState();
 }
+
+/// The room kept between the composer's start edge (where the cursor stands) and its hint
+const composerHintGap = 6.0;
 
 /// A failed photo or voice note whose file the phone has since removed
 const mediaFileGoneText = 'لم يعد الملف موجوداً على الهاتف، يمكنك إرساله من جديد';
@@ -157,6 +169,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   bool _background = false;
   StreamSubscription<void>? _live;
   bool _liveConnected = false;
+
+  /// The server said live chat isn't available (no token): polling only, asked again when the app comes back
+  bool _liveUnavailable = false;
   static const _livePollInterval = Duration(seconds: 20);
   static const _readOnlyPollInterval = Duration(seconds: 60);
 
@@ -254,6 +269,22 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   /// another phone unlocks them without leaving the chat
   Timer? _proCheck;
   static const _proCheckEvery = Duration(seconds: 60);
+
+  /// Pro chat delete: the server's switch (every GET says it; off from servers before the field)
+  bool _deleteEnabled = false;
+
+  /// My clear point: the server's (`clearedBefore`, a live `cleared`) or my own clear on its way. Saved messages at or
+  /// before it leave the list.
+  DateTime? _clearedBefore;
+
+  /// Deleted for everyone / hidden for me, as known in this visit (mine, the server's, live events): a poll that left
+  /// before the change can't bring them back, and undoing a refused change of mine never undoes them
+  final Set<String> _goneForAll = {};
+  final Set<String> _hiddenHere = {};
+
+  /// The device copy kept messages older than the first page: the next poll asks for deletions and hides since the
+  /// oldest of them (once), so a copy made before a delete never shows the deleted text
+  DateTime? _deletionsSince;
 
   @override
   void initState() {
@@ -372,6 +403,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     }
     if (state == AppLifecycleState.resumed) {
       _background = false;
+      _liveUnavailable = false;
       // Pro may have changed elsewhere meanwhile (the buttons follow it)
       if (ref.read(appPaymentsProvider)) ref.invalidate(proStateProvider);
       // Not before the chat is known (the first load starts watching itself)
@@ -414,13 +446,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   }
 
   void _startLive() {
-    if (_live != null || !mounted || _background) return;
+    if (_live != null || _liveUnavailable || !mounted || _background) return;
     _live = ref.read(chatLiveProvider).events(widget.chatId, connected: (on) {
       if (!mounted || on == _liveConnected) return;
       _liveConnected = on;
       _startPolling();
       if (on) _poll();
-    }).listen(_onLive, onDone: () => _live = null);
+    }).listen(_onLive, onDone: () {
+      // The stream only ends by itself when the server has no live chat: not asked again on every poll
+      _live = null;
+      _liveUnavailable = true;
+    });
   }
 
   /// A live event: typing and reactions carry what changed; anything else (a message, a read tick) fetches
@@ -440,6 +476,21 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
         if (i < 0) return;
         setState(() => _messages[i] = _messages[i].withReactions(reactionsFromLive(e.data?['reactions'], me)));
         _saveCache();
+      case 'deleted':
+        // A message deleted for everyone (theirs, or my own from another device): the trace, if it is loaded
+        final id = asString(e.data?['messageId']);
+        if (id == null || id.isEmpty) return;
+        _goneForAll.add(id);
+        var changed = false;
+        setState(() => changed = _applyDeletes());
+        if (changed) _saveCache();
+      case 'cleared':
+        // The chat was cleared for everyone: what was said up to then leaves the list (no traces)
+        final before = asDate(e.data?['before']);
+        if (before == null) return;
+        var changed = false;
+        setState(() => changed = _applyDeletes(clearedBefore: before));
+        if (changed) _saveCache();
       case 'message':
         final sender = asString(e.data?['senderId']);
         if (sender != null && me != null && sender != me) setState(_partnerSent);
@@ -522,6 +573,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
         _mergeLatest(page);
         // A text kept as failed (offline) that the server saved after all
         _reconcile(page.messages);
+        _deleteEnabled = page.deleteEnabled;
+        // The device copy too: what was cleared, hidden or deleted meanwhile
+        _applyDeletes(clearedBefore: page.clearedBefore, hidden: page.hiddenIds, deleted: page.deletedIds);
+        final firstOfPage = page.messages.firstOrNull;
+        final oldestHeld = olderCursorOf(_messages);
+        if (firstOfPage != null && oldestHeld != null && oldestHeld.createdAt.isBefore(firstOfPage.createdAt)) {
+          _deletionsSince = oldestHeld.createdAt;
+        }
       });
       _notePartnerTyping(page.partnerTyping);
       if (!_loadedOnce) {
@@ -538,6 +597,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
       _saveCache();
       _markRead();
       _watch();
+      // Deletions in the older part of the device copy: asked right away (after this load has finished)
+      if (_deletionsSince != null) {
+        scheduleMicrotask(() {
+          if (mounted) _poll();
+        });
+      }
       _fillScreen();
       _loadFamilyStep();
     } catch (e) {
@@ -631,6 +696,62 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     return changed;
   }
 
+  static DateTime? _later(DateTime? a, DateTime? b) => a == null ? b : (b == null || a.isAfter(b) ? a : b);
+
+  /// Hides and clears (dropped), then deletions for everyone (the trace) over the messages held, with this visit's own
+  /// on top; true when the list changed. Never adds a row: ids that aren't loaded change nothing. Called inside
+  /// setState.
+  bool _applyDeletes({DateTime? clearedBefore, Iterable<String> hidden = const [], Iterable<String> deleted = const []}) {
+    _goneForAll
+      ..addAll(deleted)
+      ..addAll(_messages.where((m) => m.deleted).map((m) => m.id));
+    _hiddenHere.addAll(hidden);
+    final cutoff = _later(_clearedBefore, clearedBefore);
+    final newClear = cutoff != null && cutoff != _clearedBefore;
+    _clearedBefore = cutoff;
+    // A newer clear point at or after the oldest message held: every older page is cleared too
+    final oldest = olderCursorOf(_messages);
+    if (newClear && (oldest == null || !cutoff.isBefore(oldest.createdAt))) _hasMore = false;
+    final next = applyDeletions(dropHidden(_messages, {...hidden, ..._hiddenHere}, cutoff), {...deleted, ..._goneForAll});
+    if (identical(next, _messages)) return false;
+    // A voice note that left (or became the trace) stops playing, once its bubble has gone
+    final stillVoice = {for (final m in next) if (m.kind == MessageKind.voice) m.id};
+    for (final m in _messages) {
+      if (m.kind == MessageKind.voice && m.state == SendState.sent && !stillVoice.contains(m.id)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _playback.forget(m.id));
+      }
+    }
+    _messages
+      ..clear()
+      ..addAll(next);
+    // The reply being written quotes a message that left or was deleted: the strip closes
+    final reply = _replyTo;
+    if (reply != null && !_messages.any((m) => m.id == reply.id && !m.deleted)) _replyTo = null;
+    return true;
+  }
+
+  /// An optimistic delete or clear was refused: every message back as it was in [snapshot] (the trace undone, quotes
+  /// that read as the trace given their text again, dropped messages re-inserted), keeping what a poll or live event
+  /// added meanwhile; then what is really deleted, hidden or cleared applies again. Called inside setState, after the
+  /// caller has taken its own change out of the sets and the clear point.
+  void _restoreFrom(List<ChatMessage> snapshot) {
+    final before = {for (final m in snapshot) m.id: m};
+    for (var i = 0; i < _messages.length; i++) {
+      final now = _messages[i];
+      final was = before[now.id];
+      if (was == null) continue;
+      // Untraced only if nothing else says it is deleted (a poll, a live event, the server's own copy)
+      if (now.deleted && !was.deleted && !_goneForAll.contains(now.id)) {
+        _messages[i] = was;
+      } else if (now.replyTo?.snippet != was.replyTo?.snippet || now.replyTo?.kind != was.replyTo?.kind) {
+        _messages[i] = now.withQuote(was.replyTo);
+      }
+    }
+    final held = _messages.map((m) => m.id).toSet();
+    _insertSorted(snapshot.where((m) => m.state == SendState.sent && !held.contains(m.id)).toList());
+    _applyDeletes();
+  }
+
   Future<void> _poll() async {
     if (_polling) {
       // A live event during a fetch: fetch once more right after it
@@ -643,14 +764,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
       final after = _pollSince;
       final catchUp = _catchUp;
       final polledAt = _polledAt;
+      final sync = _deletionsSince;
+      final since = polledAt?.subtract(_reactionsOverlap);
       final page = await _repo.load(
         widget.chatId,
         after: after,
-        reactionsSince: polledAt?.subtract(_reactionsOverlap),
+        reactionsSince: sync != null && (since == null || sync.isBefore(since)) ? sync : since,
       );
       if (!mounted) return;
       _catchUp = false;
       _polledAt = page.polledAt;
+      if (identical(_deletionsSince, sync)) _deletionsSince = null;
       final known = _messages.map((m) => m.id).toSet();
       final fresh = page.messages.where((m) => !known.contains(m.id)).toList();
       var changed = false;
@@ -661,6 +785,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
         if (page.bothWrote == true) _serverBothWrote = true;
         // A message from them ends their «يكتب الآن…»
         if (fresh.any((m) => !m.mine)) _partnerSent();
+        _deleteEnabled = page.deleteEnabled;
         if (after == null) {
           // Nothing loaded yet (the first load failed offline): take the latest page as is
           _messages.removeWhere((m) => m.state == SendState.sent);
@@ -673,6 +798,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
           if (_away) _unseen += fresh.where((m) => !m.mine).length;
           // Cut at the cap: read the rest from the newest message right away
           if (page.messages.length >= 100 && !catchUp && after != _lastServerTime) _catchUp = _pollAgain = true;
+        }
+        // After the reactions (a trace never shows any); ids that aren't loaded change nothing
+        if (_applyDeletes(clearedBefore: page.clearedBefore, hidden: page.hiddenIds, deleted: page.deletedIds)) {
+          changed = true;
         }
         _reconcile(fresh);
       });
@@ -807,7 +936,25 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   }
 
   @override
-  void didChangeMetrics() => _stickyAfterLayout();
+  void didChangeMetrics() {
+    _stickyAfterLayout();
+    _followKeyboard();
+  }
+
+  /// The keyboard is up: the composer sits right on it, with no home-indicator inset under it (simulator QA D2).
+  /// Read from the view, not the Scaffold's body (whose keyboard inset is already taken out); only a change rebuilds.
+  bool _keyboardOpen = false;
+  void _followKeyboard() {
+    if (!mounted) return;
+    final open = (View.maybeOf(context)?.viewInsets.bottom ?? 0) > 0;
+    if (open != _keyboardOpen) setState(() => _keyboardOpen = open);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _keyboardOpen = (View.maybeOf(context)?.viewInsets.bottom ?? 0) > 0;
+  }
 
   void _onScrollNotification(ScrollNotification n) {
     if (n.depth != 0) return;
@@ -855,7 +1002,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     return null;
   }
 
+  /// The list is attached AND laid out. `hasClients` alone is not enough: until the first layout the position's
+  /// `pixels` / `maxScrollExtent` / `viewportDimension` are null and their getters throw «Null check operator used on
+  /// a null value» (Crashlytics, 1.2.x: `_fillScreen` and `_revealUnread` → `_scrollToRow` right after a load).
+  bool get _scrollReady {
+    if (!_scroll.hasClients) return false;
+    final pos = _scroll.position;
+    return pos.hasContentDimensions && pos.hasPixels && pos.hasViewportDimension;
+  }
+
   void _onScroll() {
+    if (!_scrollReady) return;
     // reverse: true — offset 0 is the newest message, older ones are at the far end
     final pos = _scroll.position;
     if (pos.pixels > pos.maxScrollExtent - 200) _loadOlder();
@@ -869,9 +1026,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   }
 
   /// A first page too short to scroll can't trigger «older»: keep loading until the list fills the screen
-  void _fillScreen() {
+  void _fillScreen([int waits = 0]) {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || !_hasMore || !_scroll.hasClients) return;
+      // Attached but not laid out yet: look again next frame (a few times), never read the null extent
+      if (!_scrollReady) {
+        if (waits < 10) _fillScreen(waits + 1);
+        return;
+      }
       if (_scroll.position.maxScrollExtent > 0) return;
       await _loadOlder();
       _fillScreen();
@@ -884,16 +1046,21 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   }
 
   Future<void> _loadOlder() async {
-    if (!_hasMore || _loadingOlder || _messages.isEmpty) return;
+    // The oldest message the server knows: a failed bubble above it has a local id and the phone's time, and paging
+    // from it would skip everything between it and the loaded page
+    final first = olderCursorOf(_messages);
+    if (!_hasMore || _loadingOlder || first == null) return;
     setState(() => _loadingOlder = true);
     try {
-      final first = _messages.first;
       final page = await _repo.load(widget.chatId, before: first.createdAt, beforeId: first.id);
       if (!mounted) return;
       final known = _messages.map((m) => m.id).toSet();
       setState(() {
         _messages.insertAll(0, page.messages.where((m) => !known.contains(m.id)));
         _hasMore = page.hasMore;
+        // The server already filtered this page (hides, clears, traces): only this visit's own changes still in
+        // flight can apply, and nothing here needs saving, so the result is not used
+        _applyDeletes();
       });
     } catch (e) {
       if (mounted) showSnack(context, ApiException.messageOf(e));
@@ -941,10 +1108,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     // The next keystroke tells the other person again at once
     _typingThrottle.reset();
     _toNewest();
+    // Taken before the request: `ref` can't be used once the chat was left meanwhile
+    final container = ProviderScope.containerOf(context, listen: false);
     try {
       final sent = await _repo.send(widget.chatId, text, nonce: nonce, replyToId: reply?.id);
       _confirmedIds.add(sent.id);
-      if (first) ref.read(analyticsProvider).chatStarted();
+      if (first) container.read(analyticsProvider).chatStarted();
       if (!mounted) return;
       setState(() {
         _messages.removeWhere((m) => m.nonce == nonce || m.id == sent.id);
@@ -976,6 +1145,23 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   Future<void> _pickPhoto() async {
     if (_picking) return;
     _picking = true;
+    // The keyboard closes before the system picker opens: an open text field under the picker and the preview could
+    // get the iPhone keyboard back afterwards with nothing focused, so nothing could close it (TestFlight report)
+    _inputFocus.unfocus();
+    try {
+      await _pickPhotoAndSend();
+    } finally {
+      _hideOrphanKeyboard();
+    }
+  }
+
+  /// After the photo flow: the keyboard stays hidden unless the member tapped back into the text box
+  void _hideOrphanKeyboard() {
+    if (!mounted || _inputFocus.hasFocus) return;
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+  }
+
+  Future<void> _pickPhotoAndSend() async {
     PickedPhoto? photo;
     try {
       photo = await ref.read(chatPhotoPickerProvider)();
@@ -1175,6 +1361,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     // A refusal is said even when the hold already ended (the finger lifted to answer the prompt): the first
     // «لا» used to vanish with the dropped recorder (QA A2-L5)
     if (!allowed) {
+      // The hold is over: the finger lifting afterwards must not say «الرسالة قصيرة جداً» over the refusal and its
+      // «الإعدادات» action (a blocked microphone answers at once, while the mic is still held)
+      _holding = false;
       _drop(rec);
       if (mounted) _micRefused();
       return;
@@ -1427,6 +1616,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     final busy = _voice == _Voice.stopping;
     return SafeArea(
       top: false,
+      bottom: !_keyboardOpen,
       child: Container(
         padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
         decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: AppColors.line))),
@@ -1570,11 +1760,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     }
   }
 
-  /// Long-press on a sent message: reply, react, copy (text), report (theirs)
+  /// Long-press on a sent message: reply, react, copy (text), report (theirs), and Pro's delete entries
   Future<void> _openMenu(ChatMessage m) async {
     if (m.state != SendState.sent) return;
     FocusManager.instance.primaryFocus?.unfocus();
-    final choice = await showMessageMenu(context, message: m, canInteract: _open);
+    final choice = await showMessageMenu(context, message: m, canInteract: _open, deleteMode: _deleteModeNow(), open: _open);
     if (!mounted || choice == null) return;
     switch (choice) {
       case MenuReply():
@@ -1586,11 +1776,148 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
         if (mounted) showSnack(context, 'تم نسخ الرسالة');
       case MenuReport():
         _end(report: true, message: m);
+      case MenuDeleteForMe():
+        _deleteMessage(m, forEveryone: false);
+      case MenuDeleteForEveryone():
+        _deleteMessage(m, forEveryone: true);
     }
   }
 
+  /// Pro chat delete: [DeleteMode.use] for Pro, the upsell for a member who could buy it, else nothing. Like the media
+  /// buttons, only where the app shows payments (never a test or review account). Watched (build).
+  DeleteMode _deleteMode() {
+    final pro = ref.watch(proStateProvider).valueOrNull;
+    final countsPro = ref.watch(countsProvider.select((c) => c.valueOrNull?.isPro));
+    return deleteModeOf(
+      deleteEnabled: _deleteEnabled,
+      appPayments: ref.watch(appPaymentsProvider),
+      isPro: pro?.isPro ?? countsPro ?? false,
+      canBuy: pro?.canBuy ?? false,
+    );
+  }
+
+  /// The same, read (handlers, after an await)
+  DeleteMode _deleteModeNow() {
+    final pro = ref.read(proStateProvider).valueOrNull;
+    return deleteModeOf(
+      deleteEnabled: _deleteEnabled,
+      appPayments: ref.read(appPaymentsProvider),
+      isPro: pro?.isPro ?? ref.read(countsProvider).valueOrNull?.isPro ?? false,
+      canBuy: pro?.canBuy ?? false,
+    );
+  }
+
+  /// «حذف لديّ» / «حذف لدى الجميع». Not Pro: the Pro screen, nothing sent. «لدى الجميع» (my own message, open chat)
+  /// is confirmed first. Shown at once; a refusal puts it back and says why.
+  Future<void> _deleteMessage(ChatMessage m, {required bool forEveryone}) async {
+    final mode = _deleteModeNow();
+    if (mode == DeleteMode.hidden || m.state != SendState.sent) return;
+    if (mode == DeleteMode.upsell) return _openPro();
+    if (forEveryone) {
+      if (!m.mine || m.deleted || !_open) return;
+      final ok = await confirmDeleteSheet(
+        context,
+        title: 'حذف الرسالة لدى الجميع؟',
+        body: deleteForEveryoneConfirm,
+        confirmLabel: 'حذف لدى الجميع',
+      );
+      // The chat may have closed while the sheet was up: «لدى الجميع» only in an open chat
+      if (!ok || !mounted || !_open) return;
+    }
+    // The copy held now (a poll may have changed it since the long-press)
+    // Everything as it is now: a refusal puts back the message and the quotes of it that read as the trace
+    final snapshot = List.of(_messages);
+    // Taken before the request: `ref` can't be used once the chat was left meanwhile
+    final container = ProviderScope.containerOf(context, listen: false);
+    setState(() {
+      forEveryone ? _goneForAll.add(m.id) : _hiddenHere.add(m.id);
+      _applyDeletes();
+    });
+    // Known narrow race: a poll during the request can save this optimistic state to the device copy, and a refusal
+    // that arrives after the chat was left can't be reverted there (the page and the deletions poll on the next open
+    // only correct what the server changed)
+    try {
+      await _repo.deleteMessage(widget.chatId, m.id, forEveryone: forEveryone);
+      if (!mounted) return;
+      _saveCache();
+    } catch (e) {
+      if (e is ApiException && e.code == 'PRO_REQUIRED') {
+        container.invalidate(proStateProvider);
+        container.invalidate(countsProvider);
+      }
+      if (!mounted) return;
+      setState(() {
+        forEveryone ? _goneForAll.remove(m.id) : _hiddenHere.remove(m.id);
+        _restoreFrom(snapshot);
+      });
+      _saveCache();
+      _deleteRefused(e);
+    }
+  }
+
+  /// «مسح المحادثة»: «مسح لديّ» or (open chat) «مسح لدى الجميع», confirmed, then an empty list at once. Not Pro: the
+  /// Pro screen, nothing sent.
+  Future<void> _clearChat() async {
+    final mode = _deleteModeNow();
+    if (mode == DeleteMode.hidden) return;
+    if (mode == DeleteMode.upsell) return _openPro();
+    final everyone = await showClearChatSheet(context, canEveryone: _open);
+    if (everyone == null || !mounted) return;
+    final ok = await confirmDeleteSheet(
+      context,
+      title: everyone ? 'مسح المحادثة لدى الجميع؟' : 'مسح المحادثة لديك؟',
+      body: everyone ? clearForEveryoneConfirm : clearForMeConfirm,
+      confirmLabel: everyone ? 'مسح لدى الجميع' : 'مسح لديّ',
+    );
+    if (!ok || !mounted || (everyone && !_open)) return;
+    final container = ProviderScope.containerOf(context, listen: false);
+    // Everything as it is now (a refusal restores it; same narrow cache race as `_deleteMessage`)
+    final snapshot = List.of(_messages);
+    final clearedBefore = _clearedBefore;
+    final hadMore = _hasMore;
+    // Shown at once up to the newest message held (server time, never the phone's clock); the server's point follows
+    final upTo = _lastServerTime;
+    if (upTo != null) setState(() => _applyDeletes(clearedBefore: upTo));
+    try {
+      final at = await _repo.clearChat(widget.chatId, forEveryone: everyone);
+      if (!mounted) return;
+      setState(() {
+        _applyDeletes(clearedBefore: at);
+        // Older pages are cleared on the server too
+        _hasMore = false;
+      });
+      _saveCache();
+    } catch (e) {
+      if (e is ApiException && e.code == 'PRO_REQUIRED') {
+        container.invalidate(proStateProvider);
+        container.invalidate(countsProvider);
+      }
+      if (!mounted) return;
+      setState(() {
+        _clearedBefore = clearedBefore;
+        _hasMore = hadMore;
+        _restoreFrom(snapshot);
+      });
+      _saveCache();
+      _deleteRefused(e);
+    }
+  }
+
+  /// A delete or clear refused: the server's words. `PRO_REQUIRED` (Pro ended) adds «عضوية Pro» where it can be
+  /// bought; a closed chat or the switch going off re-reads the chat.
+  void _deleteRefused(Object e) {
+    final api = e is ApiException ? e : null;
+    final purchasable = ref.read(appPaymentsProvider) && (ref.read(proStateProvider).valueOrNull?.canBuy ?? false);
+    showSnack(
+      context,
+      ApiException.messageOf(e),
+      action: api?.code == 'PRO_REQUIRED' && purchasable ? SnackBarAction(label: 'عضوية Pro', onPressed: _openPro) : null,
+    );
+    if (api?.code == 'EXPIRED' || api?.code == 'NOT_ALLOWED' || api?.code == 'DISABLED') _poll();
+  }
+
   void _startReply(ChatMessage m) {
-    if (!_open || m.state != SendState.sent) return;
+    if (!_open || m.state != SendState.sent || m.deleted) return;
     unawaited(HapticFeedback.selectionClick());
     setState(() => _replyTo = quoteOf(m));
     _inputFocus.requestFocus();
@@ -1600,7 +1927,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
   /// [emoji] null removes mine.
   Future<void> _react(String messageId, String? emoji) async {
     if (!_open) return;
-    final i = _messages.indexWhere((m) => m.id == messageId && m.state == SendState.sent);
+    final i = _messages.indexWhere((m) => m.id == messageId && m.state == SendState.sent && !m.deleted);
     if (i < 0) return;
     final before = _messages[i].reactions;
     void set(List<ChatReaction> r) {
@@ -1672,6 +1999,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
           curve: Curves.easeOutCubic,
         );
         return true;
+      }
+      // Not laid out yet (a chat opening on unread messages): wait a frame instead of reading the null extent
+      if (!_scrollReady) {
+        await WidgetsBinding.instance.endOfFrame;
+        continue;
       }
       final pos = _scroll.position;
       if (pos.pixels >= pos.maxScrollExtent) return false;
@@ -1745,6 +2077,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     // Larger system text: the header grows with it, so the status line isn't cut under the name
     final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
     final status = _statusLine(chat, left, female);
+    final deleteMode = _deleteMode();
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -1815,12 +2148,30 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
                     _end();
                   case 'report':
                     _end(report: true);
+                  case 'clear':
+                    _clearChat();
                 }
               },
               itemBuilder: (_) => [
                 if (!chat.matchHidden) const PopupMenuItem(value: 'match', child: Text('صفحة التوافق')),
                 if (chat.canExtend) const PopupMenuItem(value: 'extend', child: Text('تمديد 7 أيام')),
                 if (chat.canSend) const PopupMenuItem(value: 'end', child: Text('إنهاء المحادثة')),
+                // Pro chat delete (a closed chat too: «مسح لديّ» works there)
+                if (deleteMode != DeleteMode.hidden)
+                  PopupMenuItem(
+                    key: const Key('chat-clear'),
+                    value: 'clear',
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('مسح المحادثة'),
+                        if (deleteMode == DeleteMode.upsell) ...[
+                          const SizedBox(width: 8),
+                          const Icon(Icons.lock_rounded, size: 16, color: AppColors.goldText, semanticLabel: 'مع Pro'),
+                        ],
+                      ],
+                    ),
+                  ),
                 const PopupMenuItem(value: 'report', child: Text('إبلاغ')),
               ],
             ),
@@ -2077,7 +2428,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
                   partnerName: _chat?.partnerName ?? '',
                   onQuoteTap: _goToQuoted,
                   waveSeed: _waveSeeds[m.id],
-                  onReactionTap: _open && m.myReaction != null ? () => _react(m.id, null) : null,
+                  onReactionTap: _open && m.myReaction != null && !m.deleted ? () => _react(m.id, null) : null,
                   onOpenPro: m.proRequired && proPurchasable ? _openPro : null,
                   onDelete: m.state == SendState.failed ? () => _deleteFailed(m) : null,
                   onRetry: m.state == SendState.failed && !m.proRequired
@@ -2093,7 +2444,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
                   duration: const Duration(milliseconds: 250),
                   color: _highlightId == m.id ? AppColors.gold.withValues(alpha: 0.22) : Colors.transparent,
                   child: SwipeToReply(
-                    enabled: _open && sent,
+                    // A trace can't be answered
+                    enabled: _open && sent && !m.deleted,
                     onReply: () => _startReply(m),
                     child: GestureDetector(
                       onLongPress: sent ? () => _openMenu(m) : null,
@@ -2192,6 +2544,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
     final starters = !holdUi && _replyTo == null && !_messages.any((m) => m.mine) ? _starters : const <String>[];
     return SafeArea(
       top: false,
+      bottom: !_keyboardOpen,
       child: Container(
         decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: AppColors.line))),
         child: ValueListenableBuilder<TextEditingValue>(
@@ -2268,7 +2621,18 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> with WidgetsBin
               onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
               style: AppText.body,
               decoration: InputDecoration(
-                hintText: forViewer(female, 'اكتب رسالتك…', 'اكتبي رسالتكِ…'),
+                // A little room at the start: the cursor of the empty, focused field stands at the very edge and
+                // would cover the hint's first letter, a thin «ا» («كتب رسالتك», simulator QA D1)
+                hint: Padding(
+                  padding: const EdgeInsetsDirectional.only(start: composerHintGap),
+                  child: Text(
+                    forViewer(female, 'اكتب رسالتك…', 'اكتبي رسالتكِ…'),
+                    key: const Key('chat-input-hint'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.body.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                ),
                 counterText: '',
                 filled: false,
                 isDense: true,

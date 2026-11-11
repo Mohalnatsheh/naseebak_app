@@ -236,6 +236,13 @@ class VoicePlayback {
     return s;
   }
 
+  /// [key] is the note asked to play right now (playing, or about to): false after a pause, while a recording blocks
+  /// playback, or when another note took over. What «played» means for the unplayed dot.
+  bool isStarted(String key) {
+    final s = _sessions[key];
+    return s != null && !s.closed && _current == key && s._wantPlay;
+  }
+
   /// The session for [key], if one is live (no attach)
   VoiceSession? sessionFor(String key) => _sessions[key];
 
@@ -264,6 +271,14 @@ class VoicePlayback {
     _sessions[to] = s;
     if (_current == from) _current = to;
     return s._player != null;
+  }
+
+  /// A note deleted for everyone, hidden or cleared: it stops and its player closes (a bubble still holding the
+  /// session lets go of it by session, see [detach])
+  void forget(String key) {
+    final s = _sessions.remove(key);
+    if (_current == key) _current = null;
+    s?._close();
   }
 
   void _closeIfIdle(VoiceSession s) {

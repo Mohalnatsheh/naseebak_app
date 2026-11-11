@@ -20,8 +20,17 @@ const _perPeriod = {'weekly': 'في الأسبوع', 'monthly': 'في الشهر
 /// Weekly and monthly grant on each renewal; yearly grants a monthly amount every month
 const _creditsEvery = {'weekly': 'كل أسبوع', 'monthly': 'كل شهر', 'yearly': 'كل شهر'};
 
+/// Pro chat delete, listed only while the server's `chat_delete_enabled` is on (copy never names a switched-off feature)
+const proChatDeleteLabel = 'حذف الرسائل ومسح المحادثة';
+
 /// What every Pro plan gives (plans card and «اشتراكي»)
-const proFeatureLabels = ['إرسال الصور في المحادثة', 'الرسائل الصوتية في المحادثة', 'شارة Pro على بطاقتك'];
+List<String> proFeatureLabels({bool chatDelete = false}) => [
+      'إرسال الصور في المحادثة',
+      'الرسائل الصوتية في المحادثة',
+      if (chatDelete) proChatDeleteLabel,
+      'شارة Pro على بطاقتك',
+      'أولوية في الاقتراحات',
+    ];
 
 String _currencySymbol(String code) => switch (code.toUpperCase()) {
   'JOD' => 'د.أ',
@@ -43,6 +52,21 @@ String creditsCount(int n) {
 
 /// «8 أرصدة مجاناً كل شهر»
 String proCreditsLine(ProOffer o) => '${creditsCount(o.credits)} مجاناً ${_creditsEvery[o.id] ?? 'كل شهر'}';
+
+/// «اشتراكي»: the credits of the member's own subscription (`creditsPerGrant`, as bought), with the next grant's date
+/// when one is due, like the website («8 أرصدة كل شهر · الدفعة القادمة في 10 ديسمبر»). A server before the field: the
+/// plan's offer of today. Null when the subscription gives no credits.
+String? myProCreditsLine(MyProState s) {
+  final own = s.creditsPerGrant;
+  if (own == null) {
+    final offer = s.offers.where((o) => o.id == s.plan).firstOrNull;
+    return offer != null && offer.credits > 0 ? proCreditsLine(offer) : null;
+  }
+  if (own <= 0) return null;
+  final next = s.nextGrantAt;
+  return '${creditsCount(own)} ${_creditsEvery[s.plan] ?? 'كل شهر'}'
+      '${next == null ? '' : ' · الدفعة القادمة في ${formatDate(next, withYear: false)}'}';
+}
 
 /// «اشتراكي» once the renewal is off: why (the member cancelled, or pausing the account stopped it) and, while still
 /// paused, that resuming waits for reactivation (QA A-M01)
@@ -69,7 +93,7 @@ String proFootnote(List<ProOffer> offers) {
 /// One line on what Pro gives; the free credits only when a plan has some
 String proPitch(List<ProOffer> offers) {
   final credits = offers.any((o) => o.credits > 0) ? '، ويصلك رصيد مجاني مع الاشتراك' : '';
-  return 'مع Pro يمكنك إرسال الصور والرسائل الصوتية في المحادثة$credits.';
+  return 'مع Pro يمكنك إرسال الصور والرسائل الصوتية في المحادثة، ولك أولوية في الاقتراحات$credits.';
 }
 
 /// The Pro screen's content: «اشتراكي» for a Pro member, otherwise the plans card.
@@ -123,6 +147,7 @@ class ProSection extends StatelessWidget {
           ProPlansCard(
             offers: state.offers,
             canBuy: state.canBuy,
+            chatDelete: state.chatDelete,
             female: female,
             busy: subscribing,
             onSubscribe: onSubscribe,
@@ -150,10 +175,14 @@ class ProPlansCard extends StatefulWidget {
     required this.female,
     required this.busy,
     required this.onSubscribe,
+    this.chatDelete = false,
   });
 
   final List<ProOffer> offers;
   final bool canBuy;
+
+  /// List «حذف الرسائل ومسح المحادثة» (server `chatDelete`)
+  final bool chatDelete;
   final bool female;
   final bool busy;
   final void Function(ProOffer offer) onSubscribe;
@@ -279,11 +308,11 @@ class _ProPlansCardState extends State<ProPlansCard> {
                 if (offer.credits > 0)
                   _FeatureLine(
                     icon: Icons.auto_awesome_rounded,
-                    color: AppColors.gold,
+                    color: AppColors.goldText,
                     text: proCreditsLine(offer),
                     strong: true,
                   ),
-                for (final f in proFeatureLabels)
+                for (final f in proFeatureLabels(chatDelete: widget.chatDelete))
                   _FeatureLine(icon: Icons.check_circle_outline_rounded, color: AppColors.navy, text: f),
                 const SizedBox(height: 12),
                 SizedBox(
@@ -462,7 +491,7 @@ class _MyProCardState extends ConsumerState<MyProCard> {
     final me = ref.watch(authControllerProvider).me;
     final paused = me?.deactivated ?? false;
     final stoppedByPause = ref.watch(proPauseNoteProvider).stopped(me?.id, pro: s);
-    final planOffer = s.offers.where((o) => o.id == s.plan).firstOrNull;
+    final creditsLine = myProCreditsLine(s);
     return Card(
       key: const Key('my-pro'),
       clipBehavior: Clip.antiAlias,
@@ -541,16 +570,16 @@ class _MyProCardState extends ConsumerState<MyProCard> {
                   ),
                 ],
                 const SizedBox(height: 10),
-                // The plan's free credits, as on the plans card (QA A-L11)
-                if (planOffer != null && planOffer.credits > 0)
+                // The subscription's own free credits (QA A-L11), not today's offer
+                if (creditsLine != null)
                   _FeatureLine(
                     key: const Key('my-pro-credits'),
                     icon: Icons.auto_awesome_rounded,
-                    color: AppColors.gold,
-                    text: proCreditsLine(planOffer),
+                    color: AppColors.goldText,
+                    text: creditsLine,
                     strong: true,
                   ),
-                for (final f in proFeatureLabels)
+                for (final f in proFeatureLabels(chatDelete: widget.state.chatDelete))
                   _FeatureLine(icon: Icons.check_circle_outline_rounded, color: AppColors.navy, text: f),
                 const SizedBox(height: 12),
                 // Paused: resume is refused until reactivation, so no button (the line above says when)
@@ -614,7 +643,7 @@ class ProLinkCard extends StatelessWidget {
           child: const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 22),
         ),
         title: const Text('عضوية Pro', style: TextStyle(fontWeight: FontWeight.w800)),
-        subtitle: Text(isPro ? proActiveText : 'إرسال الصور والرسائل الصوتية في المحادثة'),
+        subtitle: Text(isPro ? proActiveText : 'إرسال الصور والرسائل الصوتية في المحادثة، وأولوية في الاقتراحات'),
         trailing: const Icon(Icons.chevron_right, color: AppColors.muted),
         onTap: () => context.push('/pro'),
       ),

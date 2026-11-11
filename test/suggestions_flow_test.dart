@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:naseebak_app/core/auth/auth_controller.dart';
 import 'package:naseebak_app/core/push/push_permission.dart';
 import 'package:naseebak_app/core/storage/token_store.dart';
@@ -27,7 +28,9 @@ Map<String, dynamic> card(String id, {bool likedYou = false}) => {
       'candidate': {'id': 'c-$id', 'firstName': 'أحمد', 'age': 30, 'city': 'عمّان'},
     };
 
-Map<String, dynamic> counts({bool creditOnInterest = true, int credits = 5, int likedYou = 0, bool freeReply = false}) => {
+Map<String, dynamic> counts(
+        {bool creditOnInterest = true, int credits = 5, int likedYou = 0, bool freeReply = false, bool interestPaywall = false}) =>
+    {
       'flags': {
         'introRequests': true,
         'chat': true,
@@ -39,6 +42,7 @@ Map<String, dynamic> counts({bool creditOnInterest = true, int credits = 5, int 
       'newSuggestions': 1,
       'likedYou': likedYou,
       'guardian': {'exists': true, 'consented': true},
+      'interestPaywall': interestPaywall,
     };
 
 /// A signed-in member (a woman unless `gender` says otherwise) on the suggestions screen.
@@ -54,7 +58,15 @@ class Harness {
     this.freeReply = false,
     this.itemsTab = 'new',
     this.pushAllowed,
+    this.interestPaywall = false,
+    this.withRouter = false,
   }) : items = items ?? [card('s1')];
+
+  /// `interestPaywall` of the counts (switch interest_paywall, a member who can buy)
+  final bool interestPaywall;
+
+  /// Inside a router with a `/credits` page (tests that follow the recharge)
+  final bool withRouter;
 
   /// Notifications allowed on the phone (null: unknown, as the tests' default)
   final bool? pushAllowed;
@@ -82,7 +94,12 @@ class Harness {
       ..on('GET', '/api/mobile/me',
           FakeResponse(200, {'user': {...meJson(credits: credits), 'gender': gender, 'appPayments': appPayments}}))
       ..on('GET', '/api/me/counts',
-          FakeResponse(200, counts(creditOnInterest: creditOnInterest, credits: credits, likedYou: likedYou, freeReply: freeReply)))
+          FakeResponse(200, counts(
+              creditOnInterest: creditOnInterest,
+              credits: credits,
+              likedYou: likedYou,
+              freeReply: freeReply,
+              interestPaywall: interestPaywall)))
       ..on('GET', '/api/profile/dealbreakers', const FakeResponse(200, {'profile': {'dealbreakers': []}}))
       ..on('POST', '/api/reports', const FakeResponse(201, {'ok': true}));
     // Like the server: a blocked or answered card is no longer in the feed
@@ -112,6 +129,16 @@ class Harness {
   }
 
   Future<void> show(WidgetTester tester, FeedTab tab) async {
+    if (withRouter) {
+      final router = GoRouter(initialLocation: '/s', routes: [
+        GoRoute(path: '/s', builder: (_, _) => SuggestionsScreen(initialTab: tab)),
+        GoRoute(path: '/credits', builder: (_, _) => const Scaffold(body: Text('credits-page'))),
+      ]);
+      addTearDown(router.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(container: container, child: rtlRouterApp(router)));
+      await pumpFor(tester);
+      return;
+    }
     await tester.pumpWidget(
         UncontrolledProviderScope(container: container, child: rtlApp(SuggestionsScreen(initialTab: tab))));
     await pumpFor(tester);
@@ -153,6 +180,68 @@ void main() {
       await pumpFor(tester, 30);
       expect(h.topUps, 2);
     });
+  });
+
+  testWidgets('a link to a tab switches to it even when the address already names it (the member had swiped away)',
+      (tester) async {
+    final h = Harness();
+    await h.pump(tester);
+    TabController tabs() => tester.widget<TabBar>(find.byType(TabBar)).controller!;
+    // Swiped to «بانتظار ردّهم»: the screen's address still says «جديدة»
+    await tester.tap(find.byKey(const Key('feed-tab-waiting')));
+    await pumpFor(tester);
+    expect(tabs().index, FeedTab.waiting.index);
+    // Home's «اقتراحات جديدة», a notice or a push asks for «جديدة» again (`openAppRoute`)
+    feedTabRequest.ask(FeedTab.newTab);
+    await pumpFor(tester);
+    expect(tabs().index, FeedTab.newTab.index);
+  });
+
+  testWidgets('after a decision the pages already loaded are read again: the member keeps their place', (tester) async {
+    final h = Harness();
+    await h.pump(tester);
+    // Two pages of «جديدة»: 10 cards, then 2
+    final gone = <String>{};
+    List<Map<String, dynamic>> all() => [for (var i = 1; i <= 12; i++) if (!gone.contains('n$i')) card('n$i')];
+    h.adapter.handlers['GET /api/suggestions/feed'] = (r) {
+      final page = int.parse('${r.queryParameters['page'] ?? 1}');
+      final list = r.queryParameters['tab'] == 'new' ? all() : <Map<String, dynamic>>[];
+      return FakeResponse(200, {
+        'items': list.skip((page - 1) * 10).take(10).toList(),
+        'page': page,
+        'total': list.length,
+        'totalPages': (list.length / 10).ceil(),
+      });
+    };
+    h.adapter.handlers['POST /api/suggestions/n12/decide'] = (_) {
+      gone.add('n12');
+      return const FakeResponse(200, {'match': false});
+    };
+    int page2() => h.adapter
+        .to('GET', '/api/suggestions/feed')
+        .where((r) => r.queryParameters['tab'] == 'new' && '${r.queryParameters['page']}' == '2')
+        .length;
+    // Pull-to-refresh starts from the first page only
+    final refreshed = tester.state<RefreshIndicatorState>(find.byType(RefreshIndicator).first).show();
+    await pumpFor(tester, 30);
+    await refreshed;
+    expect(page2(), 0);
+    // Down to the end: the second page loads
+    for (var i = 0; i < 12 && find.byKey(const Key('decline-n12')).evaluate().isEmpty; i++) {
+      await tester.drag(find.byType(ListView).first, const Offset(0, -900));
+      await pumpFor(tester, 10);
+    }
+    expect(page2(), 1);
+    await tester.ensureVisible(find.byKey(const Key('decline-n12')));
+    await pumpFor(tester, 5);
+    await tester.tap(find.byKey(const Key('decline-n12')));
+    await pumpFor(tester);
+    await tester.tap(find.text('نعم، لا يناسبني'));
+    await pumpFor(tester, 30);
+    // The reload after the decision read page 2 again, and the card before it is still there
+    expect(page2(), 2);
+    expect(find.byKey(const Key('decline-n12')), findsNothing);
+    expect(find.byKey(const Key('decline-n11')), findsOneWidget);
   });
 
   group('«مهتم» sheet errors', () {
@@ -324,6 +413,75 @@ void main() {
       await h.pump(tester);
       expect(tester.widget<FilledButton>(find.byKey(const Key('interested-s1'))).onPressed, isNotNull);
       expect(find.byKey(const Key('zero-balance')), findsNothing);
+    });
+  });
+
+  group('0 credits with the «مهتم» paywall (interestPaywall)', () {
+    testWidgets('«مهتم» enabled; the tap opens «انتهى رصيدكِ», nothing sent, and «اشحني» opens the credits page',
+        (tester) async {
+      final h = Harness(credits: 0, interestPaywall: true, withRouter: true);
+      await h.pump(tester);
+      expect(tester.widget<FilledButton>(find.byKey(const Key('interested-s1'))).onPressed, isNotNull);
+      await tester.tap(find.byKey(const Key('interested-s1')));
+      await pumpFor(tester);
+      expect(find.byKey(const Key('recharge-sheet')), findsOneWidget);
+      expect(find.text('انتهى رصيدكِ'), findsOneWidget);
+      expect(find.byKey(const Key('send-interest')), findsNothing);
+      expect(h.adapter.to('POST', '/api/suggestions/s1/decide'), isEmpty);
+      await tester.tap(find.byKey(const Key('recharge-sheet-buy')));
+      await pumpFor(tester);
+      expect(find.text('credits-page'), findsOneWidget);
+    });
+
+    testWidgets('«إلغاء» closes the step and stays on the card', (tester) async {
+      final h = Harness(credits: 0, interestPaywall: true, gender: 'MALE');
+      await h.pump(tester);
+      await tester.tap(find.byKey(const Key('interested-s1')));
+      await pumpFor(tester);
+      expect(find.text('انتهى رصيدك'), findsOneWidget);
+      expect(find.text('اشحن رصيدك'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('recharge-sheet-cancel')));
+      await pumpFor(tester);
+      expect(find.byKey(const Key('recharge-sheet')), findsNothing);
+      expect(find.byKey(const Key('interested-s1')), findsOneWidget);
+    });
+
+    testWidgets('NO_CREDITS while sending (balance spent elsewhere): the sheet becomes «انتهى رصيدكِ»', (tester) async {
+      final h = Harness(credits: 1, interestPaywall: true);
+      h.adapter.on('POST', '/api/suggestions/s1/decide',
+          const FakeResponse(402, {'error': 'رصيدك لا يكفي', 'code': 'NO_CREDITS'}));
+      await h.pump(tester);
+      await tester.tap(find.byKey(const Key('interested-s1')));
+      await pumpFor(tester);
+      await tester.tap(find.byKey(const Key('pref-chat')));
+      await tester.tap(find.byKey(const Key('send-interest')));
+      await pumpFor(tester, 30);
+      expect(find.byKey(const Key('send-interest')), findsNothing);
+      expect(find.byKey(const Key('recharge-sheet')), findsOneWidget);
+      expect(find.text('انتهى رصيدكِ'), findsOneWidget);
+      expect(find.text('رصيدك لا يكفي'), findsNothing);
+      expect(h.container.read(authControllerProvider).me!.credits, 0);
+    });
+
+    testWidgets('payments hidden in the app: still greyed even if the server says paywall', (tester) async {
+      final h = Harness(credits: 0, interestPaywall: true, appPayments: false);
+      await h.pump(tester);
+      expect(tester.widget<FilledButton>(find.byKey(const Key('interested-s1'))).onPressed, isNull);
+    });
+
+    testWidgets('a free reply goes to the «مهتم» sheet, never the paywall', (tester) async {
+      final h = Harness(
+          credits: 0,
+          interestPaywall: true,
+          freeReply: true,
+          itemsTab: 'interested',
+          items: [card('s1', likedYou: true)],
+          likedYou: 1);
+      await h.pump(tester, tab: FeedTab.interested);
+      await tester.tap(find.byKey(const Key('interested-s1')));
+      await pumpFor(tester);
+      expect(find.byKey(const Key('recharge-sheet')), findsNothing);
+      expect(find.byKey(const Key('send-interest')), findsOneWidget);
     });
   });
 
